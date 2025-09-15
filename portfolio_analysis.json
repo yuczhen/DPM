@@ -1,0 +1,127 @@
+{
+  "portfolio_summary": {
+    "total_clients": 10,
+    "average_risk_score": 351.0,
+    "portfolio_risk_level": "Moderate Risk Portfolio",
+    "risk_distribution": {
+      "A_count": 4,
+      "B_count": 6,
+      "C_count": 0,
+      "A_percentage": 40.0,
+      "B_percentage": 60.0,
+      "C_percentage": 0.0
+    }
+  },
+  "client_evaluations": [
+    {
+      "client_id": "CLIENT_001",
+      "risk_score": 561.0,
+      "risk_category": "B",
+      "risk_level": "Medium Risk",
+      "description": "Good creditworthiness with moderate risk profile",
+      "recommendation": "Approve with standard monitoring",
+      "interest_rate_modifier": 1.5,
+      "monitoring_frequency": "Semi-annual",
+      "default_probability": "5-15%"
+    },
+    {
+      "client_id": "CLIENT_002",
+      "risk_score": 391.0,
+      "risk_category": "B",
+      "risk_level": "Medium Risk",
+      "description": "Good creditworthiness with moderate risk profile",
+      "recommendation": "Approve with standard monitoring",
+      "interest_rate_modifier": 1.5,
+      "monitoring_frequency": "Semi-annual",
+      "default_probability": "5-15%"
+    },
+    {
+      "client_id": "CLIENT_003",
+      "risk_score": 201.0,
+      "risk_category": "A",
+      "risk_level": "Low Risk",
+      "description": "Excellent creditworthiness with very low default probability",
+      "recommendation": "Approve loan with standard terms",
+      "interest_rate_modifier": 0.0,
+      "monitoring_frequency": "Annual",
+      "default_probability": "< 5%"
+    },
+    {
+      "client_id": "CLIENT_004",
+      "risk_score": 292.0,
+      "risk_category": "A",
+      "risk_level": "Low Risk",
+      "description": "Excellent creditworthiness with very low default probability",
+      "recommendation": "Approve loan with standard terms",
+      "interest_rate_modifier": 0.0,
+      "monitoring_frequency": "Annual",
+      "default_probability": "< 5%"
+    },
+    {
+      "client_id": "CLIENT_005",
+      "risk_score": 313.0,
+      "risk_category": "B",
+      "risk_level": "Medium Risk",
+      "description": "Good creditworthiness with moderate risk profile",
+      "recommendation": "Approve with standard monitoring",
+      "interest_rate_modifier": 1.5,
+      "monitoring_frequency": "Semi-annual",
+      "default_probability": "5-15%"
+    },
+    {
+      "client_id": "CLIENT_006",
+      "risk_score": 198.0,
+      "risk_category": "A",
+      "risk_level": "Low Risk",
+      "description": "Excellent creditworthiness with very low default probability",
+      "recommendation": "Approve loan with standard terms",
+      "interest_rate_modifier": 0.0,
+      "monitoring_frequency": "Annual",
+      "default_probability": "< 5%"
+    },
+    {
+      "client_id": "CLIENT_007",
+      "risk_score": 468.0,
+      "risk_category": "B",
+      "risk_level": "Medium Risk",
+      "description": "Good creditworthiness with moderate risk profile",
+      "recommendation": "Approve with standard monitoring",
+      "interest_rate_modifier": 1.5,
+      "monitoring_frequency": "Semi-annual",
+      "default_probability": "5-15%"
+    },
+    {
+      "client_id": "CLIENT_008",
+      "risk_score": 247.0,
+      "risk_category": "A",
+      "risk_level": "Low Risk",
+      "description": "Excellent creditworthiness with very low default probability",
+      "recommendation": "Approve loan with standard terms",
+      "interest_rate_modifier": 0.0,
+      "monitoring_frequency": "Annual",
+      "default_probability": "< 5%"
+    },
+    {
+      "client_id": "CLIENT_009",
+      "risk_score": 505.0,
+      "risk_category": "B",
+      "risk_level": "Medium Risk",
+      "description": "Good creditworthiness with moderate risk profile",
+      "recommendation": "Approve with standard monitoring",
+      "interest_rate_modifier": 1.5,
+      "monitoring_frequency": "Semi-annual",
+      "default_probability": "5-15%"
+    },
+    {
+      "client_id": "CLIENT_010",
+      "risk_score": 338.0,
+      "risk_category": "B",
+      "risk_level": "Medium Risk",
+      "description": "Good creditworthiness with moderate risk profile",
+      "recommendation": "Approve with standard monitoring",
+      "interest_rate_modifier": 1.5,
+      "monitoring_frequency": "Semi-annual",
+      "default_probability": "5-15%"
+    }
+  ]
+}
