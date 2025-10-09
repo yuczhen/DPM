@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python:*)",
+      "Bash(del test_mini_dataset.py)",
+      "Bash(del example_time_aware_training.py)",
+      "Bash(find:*)",
+      "Bash(rm:*)",
+      "Bash(cp:*)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}
