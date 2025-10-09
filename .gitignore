@@ -75,6 +75,7 @@ Train/fix_salary_ranges.py
 Train/main2.py
 Train/step1_handle_missing_values.py
 ANALYSIS_SUMMARY.md
+create_mini_dataset.py
 
 # Backup files
 *.bak
