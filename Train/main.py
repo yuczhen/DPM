@@ -45,9 +45,13 @@ from sklearn.ensemble import VotingClassifier
 # SHAP解釋性
 import shap
 
+# Weights & Biases for experiment tracking and hyperparameter tuning
+import wandb
+
 # 其他工具
 import joblib
 import json
+import re
 from datetime import datetime
 import os
 from scipy import stats
@@ -170,6 +174,158 @@ class WoEEncoder:
         return [f for f, iv in self.iv_dict.items() if iv >= iv_threshold]
 
 
+class TargetEncoder:
+    """
+    Target Encoding (Mean Encoding)
+    將分類變數編碼為目標變數的平均值
+    """
+    def __init__(self, smoothing=1.0):
+        self.smoothing = smoothing
+        self.target_mean = {}
+        self.global_mean = None
+
+    def fit(self, X, y, categorical_features):
+        """訓練 Target Encoder"""
+        df = X.copy()
+        df['target'] = y
+        self.global_mean = y.mean()
+
+        for feature in categorical_features:
+            if feature not in df.columns:
+                continue
+
+            # Calculate mean target per category with smoothing
+            agg = df.groupby(feature)['target'].agg(['mean', 'count'])
+
+            # Smoothing formula: (count * mean + smoothing * global_mean) / (count + smoothing)
+            smoothed_mean = (
+                (agg['count'] * agg['mean'] + self.smoothing * self.global_mean) /
+                (agg['count'] + self.smoothing)
+            )
+
+            self.target_mean[feature] = smoothed_mean.to_dict()
+
+    def transform(self, X, categorical_features):
+        """轉換為 Target Encoding 值"""
+        X_encoded = X.copy()
+
+        for feature in categorical_features:
+            if feature not in self.target_mean:
+                continue
+
+            target_map = self.target_mean[feature]
+            X_encoded[f'{feature}_target_enc'] = X[feature].map(target_map).fillna(self.global_mean)
+
+        return X_encoded
+
+    def fit_transform(self, X, y, categorical_features):
+        self.fit(X, y, categorical_features)
+        return self.transform(X, categorical_features)
+
+
+class GeographicRiskEncoder:
+    """
+    Geographic Risk Feature Engineering
+    計算地理位置的違約風險特徵
+    """
+    def __init__(self, min_samples=10):
+        self.min_samples = min_samples
+        self.res_risk_map = {}
+        self.perm_risk_map = {}
+        self.city_risk_map = {}
+        self.global_default_rate = None
+
+    def fit(self, X, y, res_col='post code of residential address',
+            perm_col='post code of permanent address'):
+        """訓練地理風險編碼器"""
+        df = X.copy()
+        df['Default'] = y
+        self.global_default_rate = y.mean()
+
+        print("\n" + "=" * 70)
+        print("Geographic Risk Feature Engineering")
+        print("=" * 70)
+
+        # Residential postal code risk
+        if res_col in df.columns:
+            res_risk = df.groupby(res_col)['Default'].agg(['mean', 'count'])
+            res_risk.columns = ['default_rate', 'sample_count']
+
+            # Only trust postal codes with enough samples
+            res_risk['risk_score'] = res_risk['default_rate']
+            res_risk.loc[res_risk['sample_count'] < self.min_samples, 'risk_score'] = self.global_default_rate
+
+            self.res_risk_map = res_risk['risk_score'].to_dict()
+
+            print(f"\nResidential postal codes: {len(res_risk)} unique")
+            print(f"  Risk range: {res_risk['risk_score'].min():.4f} ~ {res_risk['risk_score'].max():.4f}")
+
+            # Top risk areas
+            top_risk = res_risk.nlargest(5, 'risk_score')
+            print(f"\n  Top 5 highest risk areas:")
+            for idx, (postal, row) in enumerate(top_risk.iterrows(), 1):
+                print(f"    {idx}. {postal}: {row['risk_score']:.2%} (n={row['sample_count']:.0f})")
+
+        # Permanent postal code risk
+        if perm_col in df.columns:
+            perm_risk = df.groupby(perm_col)['Default'].agg(['mean', 'count'])
+            perm_risk['risk_score'] = perm_risk['mean']
+            perm_risk.loc[perm_risk['count'] < self.min_samples, 'risk_score'] = self.global_default_rate
+
+            self.perm_risk_map = perm_risk['risk_score'].to_dict()
+
+            print(f"\nPermanent postal codes: {len(perm_risk)} unique")
+
+        # City level risk (extract first 3 digits)
+        if res_col in df.columns:
+            df['city'] = df[res_col].astype(str).str[:3]
+            city_risk = df.groupby('city')['Default'].agg(['mean', 'count'])
+            city_risk['risk_score'] = city_risk['mean']
+            city_risk.loc[city_risk['count'] < self.min_samples * 5, 'risk_score'] = self.global_default_rate
+
+            self.city_risk_map = city_risk['risk_score'].to_dict()
+
+            print(f"\nCities: {len(city_risk)} unique")
+
+    def transform(self, X, res_col='post code of residential address',
+                  perm_col='post code of permanent address'):
+        """轉換為地理風險特徵"""
+        X_geo = X.copy()
+
+        # Residential risk score
+        if res_col in X.columns and self.res_risk_map:
+            X_geo['res_risk_score'] = X[res_col].map(self.res_risk_map).fillna(self.global_default_rate)
+
+            # Risk level categorization
+            X_geo['res_risk_level'] = pd.cut(
+                X_geo['res_risk_score'],
+                bins=[0, 0.03, 0.06, 0.10, 1.0],
+                labels=['low', 'medium', 'high', 'very_high']
+            )
+
+        # Permanent risk score
+        if perm_col in X.columns and self.perm_risk_map:
+            X_geo['perm_risk_score'] = X[perm_col].map(self.perm_risk_map).fillna(self.global_default_rate)
+
+        # City risk score
+        if res_col in X.columns and self.city_risk_map:
+            X_geo['city'] = X[res_col].astype(str).str[:3]
+            X_geo['city_risk_score'] = X_geo['city'].map(self.city_risk_map).fillna(self.global_default_rate)
+
+        # Address stability risk (combined feature)
+        if 'address_match' in X.columns and 'res_risk_score' in X_geo.columns:
+            X_geo['address_stability_risk'] = (
+                (1 - X['address_match']) * 0.3 + X_geo['res_risk_score'] * 0.7
+            )
+
+        return X_geo
+
+    def fit_transform(self, X, y, res_col='post code of residential address',
+                     perm_col='post code of permanent address'):
+        self.fit(X, y, res_col, perm_col)
+        return self.transform(X, res_col, perm_col)
+
+
 class AdvancedDefaultPredictionPipeline:
     """
     Advanced Default Prediction Pipeline for client risk assessment
@@ -205,7 +361,7 @@ class AdvancedDefaultPredictionPipeline:
         if self.use_wandb:
             self._init_wandb()
 
-    def load_real_data(self, file_path='source/DPM_data_cleaned.xlsx'):
+    def load_real_data(self, file_path='source/DPM_merged_cleaned.xlsx'):
         """
         載入真實的 DPM 資料
 
@@ -378,7 +534,7 @@ class AdvancedDefaultPredictionPipeline:
         """
         定義違約標籤
 
-        Rule: M2+ (逾期60天以上) = 違約
+        Rule: M1+ (逾期30天以上) = 違約
         """
         print("\n" + "=" * 70)
         print("定義違約標籤")
@@ -407,20 +563,21 @@ class AdvancedDefaultPredictionPipeline:
 
     def credit_focused_feature_engineering(self, df):
         """
-        特徵工程 - 以徵審重點為導向
+        特徵工程 - 以徵審重點為導向 + DTI Focus
 
         徵審關注點:
         1. 還款能力 (財務能力)
         2. 聯絡穩定性 (找得到人)
+        3. DTI (債務收入比) - CRITICAL
         """
         print("\n" + "=" * 70)
-        print("Feature Engineering (Credit Assessment Focus)")
+        print("Feature Engineering (Credit Assessment Focus + DTI)")
         print("=" * 70)
 
         df_fe = df.copy()
 
         # === 財務能力指標 ===
-        print("\n[1/3] Financial Capability Indicators")
+        print("\n[1/4] Financial Capability Indicators")
 
         # 1. 還款進度比率
         df_fe['payment_progress_ratio'] = (
@@ -433,7 +590,7 @@ class AdvancedDefaultPredictionPipeline:
         print("  + job_stable (tenure >= 1 year)")
 
         # === 聯絡穩定性指標 ===
-        print("\n[2/3] Contact Stability Indicators")
+        print("\n[2/4] Contact Stability Indicators")
 
         # 3. 戶籍居住地一致性
         df_fe['address_match'] = (
@@ -449,25 +606,38 @@ class AdvancedDefaultPredictionPipeline:
         ).astype(int)
         print("  + residence_stable (own/spouse/family)")
 
-        # === 逾期行為指標 ===
-        print("\n[3/3] Overdue Behavior Indicators")
+        # === DTI & Financial Burden - CRITICAL! ===
+        print("\n[3/4] DTI & Financial Burden (CRITICAL!)")
 
-        # 5. 總逾期次數
+        # 5. DTI ratio
+        if 'debt_to_income_ratio' in df_fe.columns:
+            df_fe['dti_ratio'] = pd.to_numeric(df_fe['debt_to_income_ratio'], errors='coerce').fillna(0).clip(0, 2)
+            print("  + dti_ratio (debt/income ratio - PRIMARY INDICATOR)")
+
+        # 6. Payment pressure
+        if 'payment_to_income_ratio' in df_fe.columns:
+            df_fe['payment_pressure'] = pd.to_numeric(df_fe['payment_to_income_ratio'], errors='coerce').fillna(0).clip(0, 1)
+            print("  + payment_pressure (payment/income ratio)")
+
+        # === 逾期行為指標 (早期) ===
+        print("\n[4/4] Early Overdue Behavior Indicators")
+
+        # 7. 早期逾期次數
         overdue_cols = [
             'number of overdue before the first month',
             'number of overdue in the first half of the first month',
             'number of overdue in the second half of the first month',
         ]
-        df_fe['total_overdue_count'] = df_fe[overdue_cols].sum(axis=1)
-        print("  + total_overdue_count (sum of early overdue)")
+        df_fe['early_overdue_count'] = df_fe[overdue_cols].sum(axis=1)
+        print("  + early_overdue_count (sum of early overdue)")
 
-        # 6. 是否有逾期記錄
-        df_fe['has_overdue'] = (df_fe['total_overdue_count'] > 0).astype(int)
+        # 8. 是否有逾期記錄
+        df_fe['has_overdue'] = (df_fe['early_overdue_count'] > 0).astype(int)
         print("  + has_overdue (binary flag)")
 
         print(f"\nFeature engineering completed!")
         print(f"  Original features: {len(df.columns)}")
-        print(f"  New features added: 6")
+        print(f"  New features added: 8")
         print(f"  Total features: {len(df_fe.columns)}")
 
         return df_fe
@@ -505,8 +675,12 @@ class AdvancedDefaultPredictionPipeline:
             'address_match',
             'residence_stable',
 
-            # 逾期行為
-            'total_overdue_count',
+            # DTI - CRITICAL!
+            'dti_ratio',
+            'payment_pressure',
+
+            # 逾期行為 (早期)
+            'early_overdue_count',
             'has_overdue',
 
             # 原始特徵
@@ -529,186 +703,6 @@ class AdvancedDefaultPredictionPipeline:
 
         return categorical_features, numerical_features
 
-    def generate_dataset(self, n_samples=10000, imbalance_ratio=0.15):
-        """
-        生成更真實的企業級資料集
-        模擬銀行已放貸客戶的完整資料
-        """
-        np.random.seed(self.random_state)
-        
-        print(f"生成 {n_samples} 筆企業級訓練資料...")
-        
-        # === 基本人口統計學特徵 ===
-        ages = np.random.normal(38, 12, n_samples).clip(18, 75)
-        
-        # 收入分佈 (對數正態分佈)
-        log_incomes = np.random.normal(10.8, 0.7, n_samples)  # 約40K-100K主要區間
-        incomes = np.exp(log_incomes).clip(20000, 500000)
-        
-        # 教育程度 (影響收入和違約率)
-        education_levels = np.random.choice([1, 2, 3, 4, 5], n_samples, 
-                                         p=[0.15, 0.25, 0.35, 0.20, 0.05])  # 1:國中以下, 2:高中, 3:大專, 4:大學, 5:研究所
-        
-        # 職業類別
-        job_categories = np.random.choice(range(1, 8), n_samples, 
-                                        p=[0.20, 0.15, 0.18, 0.12, 0.15, 0.10, 0.10])
-        # 1:服務業, 2:製造業, 3:金融, 4:科技, 5:教育, 6:醫療, 7:其他
-        
-        # === 貸款特徵 ===
-        # 貸款金額 (與收入相關)
-        loan_to_income_ratios = np.random.beta(2, 5, n_samples) * 3  # 0-3倍年收入
-        loan_amounts = incomes * loan_to_income_ratios * np.random.uniform(0.1, 0.8, n_samples)
-        loan_amounts = loan_amounts.clip(10000, 2000000)
-        
-        # 貸款期限
-        loan_terms = np.random.choice([12, 18, 24, 30, 36, 48, 60], n_samples,
-                                    p=[0.05, 0.10, 0.25, 0.15, 0.25, 0.15, 0.05])
-        
-        # 利率 (與風險相關)
-        base_rates = np.random.normal(8, 2, n_samples).clip(4, 20)
-        
-        # === 信用歷史特徵 ===
-        credit_history_months = np.random.exponential(36, n_samples).clip(0, 300)  # 信用歷史月數
-        previous_loans_count = np.random.poisson(2.5, n_samples).clip(0, 15)  # 過往貸款次數
-        
-        # === 行為特徵 (放貸後6個月的表現) ===
-        # 還款表現
-        on_time_payment_rate = np.random.beta(8, 2, n_samples)  # 準時還款比率
-        late_payments_count = np.random.poisson(1.2, n_samples).clip(0, 10)  # 遲繳次數
-        missed_payments_count = np.random.poisson(0.3, n_samples).clip(0, 5)  # 漏繳次數
-        
-        # 賬戶活動
-        avg_monthly_balance = incomes * np.random.uniform(0.1, 3.0, n_samples)  # 平均月餘額
-        transaction_frequency = np.random.poisson(25, n_samples).clip(1, 100)  # 月交易次數
-        
-        # 信用卡使用情況
-        credit_limit_total = loan_amounts * np.random.uniform(0.5, 5.0, n_samples)
-        credit_utilization = np.random.beta(2, 3, n_samples)  # 信用使用率
-        
-        # === 財務健康指標 ===
-        # 債務收入比
-        total_monthly_debt = (loan_amounts / loan_terms) + np.random.uniform(500, 2000, n_samples)
-        monthly_income = incomes / 12
-        debt_to_income_ratio = total_monthly_debt / monthly_income
-        
-        # 資產相關
-        has_mortgage = np.random.binomial(1, 0.4, n_samples)  # 是否有房貸
-        has_car_loan = np.random.binomial(1, 0.3, n_samples)  # 是否有車貸
-        savings_to_income_ratio = np.random.beta(1, 4, n_samples)  # 儲蓄收入比
-        
-        # === 外部數據特徵 ===
-        # 就業狀況
-        employment_status = np.random.choice([1, 2, 3, 4], n_samples, p=[0.75, 0.15, 0.05, 0.05])
-        # 1:全職, 2:兼職, 3:自雇, 4:無業
-        
-        # 婚姻狀況
-        marital_status = np.random.choice([1, 2, 3], n_samples, p=[0.45, 0.50, 0.05])
-        # 1:單身, 2:已婚, 3:其他
-        
-        # 居住狀況
-        housing_status = np.random.choice([1, 2, 3], n_samples, p=[0.6, 0.3, 0.1])
-        # 1:自有, 2:租賃, 3:其他
-        
-        # === 時間序列特徵 ===
-        # 經濟環境指標 (模擬放貸時的經濟狀況)
-        economic_index = np.random.normal(100, 15, n_samples).clip(70, 130)
-        unemployment_rate = np.random.uniform(3, 8, n_samples)
-        
-        # 季節性因素
-        loan_month = np.random.choice(range(1, 13), n_samples)
-        is_holiday_season = np.where(np.isin(loan_month, [11, 12, 1]), 1, 0)
-        
-        # === 衍生特徵 ===
-        # 風險分數計算
-        risk_factors = (
-            -education_levels * 0.1 +
-            (employment_status == 4) * 0.8 +  # 無業
-            late_payments_count * 0.15 +
-            missed_payments_count * 0.3 +
-            debt_to_income_ratio * 0.5 +
-            (1 - on_time_payment_rate) * 0.4 +
-            credit_utilization * 0.2 +
-            (ages < 25) * 0.2 +  # 年輕風險
-            (ages > 65) * 0.15 +  # 高齡風險
-            np.random.normal(0, 0.3, n_samples)  # 隨機因子
-        )
-        
-        # 違約機率計算 (sigmoid轉換)
-        default_probability = 1 / (1 + np.exp(-risk_factors + 0.5))  # 調整基準線
-        
-        # 根據期望違約率調整
-        target_default_rate = imbalance_ratio
-        current_mean = np.mean(default_probability)
-        adjustment = np.log(target_default_rate / (1 - target_default_rate)) - np.log(current_mean / (1 - current_mean))
-        adjusted_probability = 1 / (1 + np.exp(-(risk_factors + adjustment)))
-        
-        # 生成最終違約標籤
-        defaults = np.random.binomial(1, adjusted_probability, n_samples)
-        
-        # === 建立DataFrame ===
-        data = pd.DataFrame({
-            # 基本特徵
-            'Customer_ID': range(1, n_samples + 1),
-            'Age': ages.astype(int),
-            'Education_Level': education_levels,
-            'Job_Category': job_categories,
-            'Employment_Status': employment_status,
-            'Marital_Status': marital_status,
-            'Housing_Status': housing_status,
-            
-            # 收入財務
-            'Annual_Income': incomes.round(0).astype(int),
-            'Monthly_Income': (incomes / 12).round(0).astype(int),
-            
-            # 貸款資訊
-            'Loan_Amount': loan_amounts.round(0).astype(int),
-            'Loan_Term_Months': loan_terms,
-            'Interest_Rate': base_rates.round(2),
-            'Loan_to_Income_Ratio': loan_to_income_ratios.round(3),
-            
-            # 信用歷史
-            'Credit_History_Months': credit_history_months.round(0).astype(int),
-            'Previous_Loans_Count': previous_loans_count,
-            
-            # 還款行為 (放貸後6個月觀察期)
-            'On_Time_Payment_Rate': on_time_payment_rate.round(3),
-            'Late_Payments_Count': late_payments_count,
-            'Missed_Payments_Count': missed_payments_count,
-            
-            # 賬戶活動
-            'Avg_Monthly_Balance': avg_monthly_balance.round(0).astype(int),
-            'Transaction_Frequency': transaction_frequency,
-            
-            # 信用使用
-            'Total_Credit_Limit': credit_limit_total.round(0).astype(int),
-            'Credit_Utilization_Rate': credit_utilization.round(3),
-            
-            # 債務情況
-            'Total_Monthly_Debt_Payment': total_monthly_debt.round(0).astype(int),
-            'Debt_to_Income_Ratio': debt_to_income_ratio.round(3),
-            'Has_Mortgage': has_mortgage,
-            'Has_Car_Loan': has_car_loan,
-            'Savings_to_Income_Ratio': savings_to_income_ratio.round(3),
-            
-            # 外部環境
-            'Economic_Index_At_Origination': economic_index.round(1),
-            'Unemployment_Rate_At_Origination': unemployment_rate.round(2),
-            'Loan_Origination_Month': loan_month,
-            'Is_Holiday_Season': is_holiday_season,
-            
-            # 目標變數
-            'Default': defaults
-        })
-        
-        print(f"資料集生成完成:")
-        print(f"- 總樣本數: {len(data):,}")
-        print(f"- 特徵數: {data.shape[1] - 2}")  # 排除ID和目標變數
-        print(f"- 違約率: {data['Default'].mean():.2%}")
-        print(f"- 違約樣本數: {data['Default'].sum():,}")
-        print(f"- 正常樣本數: {(~data['Default'].astype(bool)).sum():,}")
-        
-        return data
-    
     def advanced_feature_engineering(self, data):
         """
         進階特徵工程
@@ -1269,7 +1263,7 @@ class AdvancedDefaultPredictionPipeline:
         try:
             # 從環境變數取得 API key
             api_key = os.getenv('WANDB_API_KEY')
-            project_name = os.getenv('WANDB_PROJECT_NAME', 'dpm_credit_risk')
+            project_name = os.getenv('WANDB_PROJECT_NAME', 'dpm_run')
             entity = os.getenv('WANDB_ENTITY')
 
             if api_key and api_key != 'your_wandb_api_key_here':
@@ -1340,7 +1334,7 @@ def train_with_real_data():
 
     # 2. 載入真實資料
     print("\n[Step 2/8] Load Real Data")
-    df = pipeline.load_real_data('source/DPM_data_cleaned.xlsx')
+    df = pipeline.load_real_data('source/DPM_merged_cleaned.xlsx')
 
     # 3. 處理缺失值
     print("\n[Step 3/8] Handle Missing Values")
@@ -1505,9 +1499,85 @@ def train_with_real_data():
             "best_auc_roc": best_auc
         })
 
-    # 13. 特徵重要性（根據 IV 值）
+    # 13. SHAP Analysis for Feature Importance (includes DTI!)
     print("\n" + "=" * 80)
-    print("Feature Importance by IV Value")
+    print("SHAP Feature Importance Analysis")
+    print("=" * 80)
+
+    # Sample for SHAP (use subset for speed)
+    sample_size = min(500, len(X_test_final))
+    X_shap_sample = X_test_final.sample(n=sample_size, random_state=42)
+
+    shap_importance_dict = {}
+
+    for model_name, model_result in results.items():
+        model = model_result['model']
+        print(f"\n[SHAP] Analyzing {model_name}...")
+
+        try:
+            explainer = shap.TreeExplainer(model)
+            shap_values = explainer.shap_values(X_shap_sample)
+
+            # For binary classification, take positive class SHAP values
+            if isinstance(shap_values, list):
+                shap_values = shap_values[1]
+
+            # Calculate mean absolute SHAP values
+            mean_abs_shap = np.abs(shap_values).mean(axis=0)
+            shap_importance_dict[model_name] = mean_abs_shap
+
+            print(f"  SHAP analysis completed for {model_name}")
+
+        except Exception as e:
+            print(f"  [WARNING] SHAP failed for {model_name}: {e}")
+
+    # Combine SHAP importance across models
+    if shap_importance_dict:
+        feature_names = X_train_final.columns.tolist()
+        shap_df = pd.DataFrame(shap_importance_dict, index=feature_names)
+        shap_df['Mean_SHAP'] = shap_df.mean(axis=1)
+        shap_df = shap_df.sort_values('Mean_SHAP', ascending=False)
+
+        print(f"\n{'='*80}")
+        print("Top 15 Features by SHAP Importance")
+        print(f"{'='*80}")
+        print(f"{'Rank':<6} {'Feature':<35} {'SHAP Importance':<20}")
+        print(f"{'-'*80}")
+
+        for rank, (feat, row) in enumerate(shap_df.head(15).iterrows(), 1):
+            print(f"{rank:<6} {feat:<35} {row['Mean_SHAP']:<20.6f}")
+
+        # Check if DTI features are in top features
+        dti_features_check = [f for f in feature_names if 'dti' in f.lower() or 'payment_pressure' in f.lower()]
+        if dti_features_check:
+            print(f"\n{'='*80}")
+            print("DTI-Related Features in SHAP Analysis:")
+            print(f"{'='*80}")
+            for feat in dti_features_check:
+                if feat in shap_df.index:
+                    shap_val = shap_df.loc[feat, 'Mean_SHAP']
+                    rank = (shap_df['Mean_SHAP'] >= shap_val).sum()
+                    print(f"  {feat:<35} | SHAP: {shap_val:.6f} | Rank: #{rank}")
+        else:
+            print(f"\n[WARNING] DTI features not found in feature list!")
+
+        # Save SHAP report
+        shap_df.to_csv('Result/SHAP_Feature_Importance.csv')
+        print(f"\n[OK] SHAP report saved to Result/SHAP_Feature_Importance.csv")
+
+        # Log to W&B
+        if pipeline.use_wandb and pipeline.wandb_run:
+            shap_table_data = [[feat, row['Mean_SHAP']] for feat, row in shap_df.head(20).iterrows()]
+            wandb.log({
+                "feature_importance/shap_values": wandb.Table(
+                    data=shap_table_data,
+                    columns=["Feature", "Mean_Abs_SHAP"]
+                )
+            })
+
+    # 14. IV Feature Importance (for categorical features)
+    print("\n" + "=" * 80)
+    print("IV Feature Importance (Categorical Features)")
     print("=" * 80)
 
     important_features = woe_encoder.get_important_features(iv_threshold=0.02)
@@ -1526,7 +1596,221 @@ def train_with_real_data():
             )
         })
 
-    # 14. 記錄資料集資訊到 W&B
+    # 15. Threshold Optimization for Better Recall
+    print("\n" + "=" * 80)
+    print("Threshold Optimization (Option A: Improve Recall)")
+    print("=" * 80)
+
+    def find_optimal_threshold(y_true, y_pred_proba, metric='f1', beta=2):
+        """
+        Find optimal classification threshold
+
+        Args:
+            y_true: True labels
+            y_pred_proba: Predicted probabilities
+            metric: 'f1', 'f2' (recall-focused), or 'balanced' (equal weight)
+            beta: For F-beta score (beta=2 weights recall 2x higher than precision)
+        """
+        from sklearn.metrics import fbeta_score
+
+        thresholds = np.arange(0.1, 0.9, 0.01)
+        scores = []
+
+        for thresh in thresholds:
+            y_pred_thresh = (y_pred_proba >= thresh).astype(int)
+
+            if metric == 'f1':
+                score = f1_score(y_true, y_pred_thresh)
+            elif metric == 'f2':
+                score = fbeta_score(y_true, y_pred_thresh, beta=beta)
+            elif metric == 'balanced':
+                prec = precision_score(y_true, y_pred_thresh)
+                rec = recall_score(y_true, y_pred_thresh)
+                score = (prec + rec) / 2
+
+            scores.append(score)
+
+        optimal_idx = np.argmax(scores)
+        optimal_threshold = thresholds[optimal_idx]
+        optimal_score = scores[optimal_idx]
+
+        return optimal_threshold, optimal_score
+
+    # Find optimal thresholds for each model
+    print("\nFinding optimal thresholds for better recall (F2-score)...")
+    optimal_thresholds = {}
+
+    for model_name, model_result in results.items():
+        y_pred_proba = model_result['probabilities']
+
+        # F2 score (weights recall 2x more than precision)
+        optimal_thresh, optimal_f2 = find_optimal_threshold(y_test, y_pred_proba, metric='f2', beta=2)
+
+        # Evaluate at optimal threshold
+        y_pred_optimal = (y_pred_proba >= optimal_thresh).astype(int)
+
+        optimal_accuracy = accuracy_score(y_test, y_pred_optimal)
+        optimal_precision = precision_score(y_test, y_pred_optimal)
+        optimal_recall = recall_score(y_test, y_pred_optimal)
+        optimal_f1 = f1_score(y_test, y_pred_optimal)
+
+        optimal_thresholds[model_name] = {
+            'threshold': optimal_thresh,
+            'f2_score': optimal_f2,
+            'accuracy': optimal_accuracy,
+            'precision': optimal_precision,
+            'recall': optimal_recall,
+            'f1': optimal_f1
+        }
+
+        print(f"\n{model_name}:")
+        print(f"  Optimal Threshold: {optimal_thresh:.3f} (default: 0.500)")
+        print(f"  At optimal threshold:")
+        print(f"    Recall: {optimal_recall:.4f} (was {model_result['recall']:.4f}) {'↑' if optimal_recall > model_result['recall'] else ''}")
+        print(f"    Precision: {optimal_precision:.4f} (was {model_result['precision']:.4f})")
+        print(f"    F1: {optimal_f1:.4f} (was {model_result['f1']:.4f})")
+        print(f"    F2: {optimal_f2:.4f}")
+
+        # Log to W&B
+        if pipeline.use_wandb and pipeline.wandb_run:
+            wandb.log({
+                f"{model_name}/optimal_threshold": optimal_thresh,
+                f"{model_name}/optimal/recall": optimal_recall,
+                f"{model_name}/optimal/precision": optimal_precision,
+                f"{model_name}/optimal/f1": optimal_f1,
+                f"{model_name}/optimal/f2": optimal_f2
+            })
+
+    # 16. Stacking Ensemble
+    print("\n" + "=" * 80)
+    print("Stacking Ensemble Model")
+    print("=" * 80)
+
+    from sklearn.ensemble import StackingClassifier
+    from sklearn.linear_model import LogisticRegression
+
+    # Create base models list
+    base_models = [
+        ('xgb', results['XGBoost']['model']),
+        ('lgb', results['LightGBM']['model']),
+        ('cat', results['CatBoost']['model'])
+    ]
+
+    # Create stacking model with Logistic Regression as meta-learner
+    stacking_model = StackingClassifier(
+        estimators=base_models,
+        final_estimator=LogisticRegression(max_iter=1000, random_state=42),
+        cv=5,
+        n_jobs=-1
+    )
+
+    print("\nTraining Stacking Ensemble...")
+    stacking_model.fit(X_train_final, y_train)
+
+    # Evaluate Stacking
+    stack_pred = stacking_model.predict(X_test_final)
+    stack_pred_proba = stacking_model.predict_proba(X_test_final)[:, 1]
+
+    stack_auc = roc_auc_score(y_test, stack_pred_proba)
+    stack_accuracy = accuracy_score(y_test, stack_pred)
+    stack_precision = precision_score(y_test, stack_pred)
+    stack_recall = recall_score(y_test, stack_pred)
+    stack_f1 = f1_score(y_test, stack_pred)
+
+    print(f"\nStacking Ensemble Performance:")
+    print(f"  AUC-ROC: {stack_auc:.4f}")
+    print(f"  Accuracy: {stack_accuracy:.4f}")
+    print(f"  Precision: {stack_precision:.4f}")
+    print(f"  Recall: {stack_recall:.4f}")
+    print(f"  F1-Score: {stack_f1:.4f}")
+    print(f"\n{classification_report(y_test, stack_pred, target_names=['Normal', 'Default'])}")
+
+    results['Stacking'] = {
+        'model': stacking_model,
+        'auc': stack_auc,
+        'accuracy': stack_accuracy,
+        'precision': stack_precision,
+        'recall': stack_recall,
+        'f1': stack_f1,
+        'predictions': stack_pred,
+        'probabilities': stack_pred_proba
+    }
+
+    # Optimize Stacking threshold
+    stack_optimal_thresh, stack_optimal_f2 = find_optimal_threshold(y_test, stack_pred_proba, metric='f2', beta=2)
+    stack_pred_optimal = (stack_pred_proba >= stack_optimal_thresh).astype(int)
+    stack_optimal_recall = recall_score(y_test, stack_pred_optimal)
+    stack_optimal_precision = precision_score(y_test, stack_pred_optimal)
+    stack_optimal_f1 = f1_score(y_test, stack_pred_optimal)
+
+    print(f"\nStacking - Optimal Threshold: {stack_optimal_thresh:.3f}")
+    print(f"  At optimal threshold:")
+    print(f"    Recall: {stack_optimal_recall:.4f} (was {stack_recall:.4f}) {'↑' if stack_optimal_recall > stack_recall else ''}")
+    print(f"    Precision: {stack_optimal_precision:.4f} (was {stack_precision:.4f})")
+    print(f"    F1: {stack_optimal_f1:.4f} (was {stack_f1:.4f})")
+    print(f"    F2: {stack_optimal_f2:.4f}")
+
+    optimal_thresholds['Stacking'] = {
+        'threshold': stack_optimal_thresh,
+        'f2_score': stack_optimal_f2,
+        'precision': stack_optimal_precision,
+        'recall': stack_optimal_recall,
+        'f1': stack_optimal_f1
+    }
+
+    # Update best model if stacking is better
+    if stack_auc > best_auc:
+        best_model_name = 'Stacking'
+        best_auc = stack_auc
+        print(f"\n[UPDATE] New best model: Stacking (AUC: {stack_auc:.4f})")
+
+    # Log stacking to W&B
+    if pipeline.use_wandb and pipeline.wandb_run:
+        wandb.log({
+            "Stacking/test/auc_roc": stack_auc,
+            "Stacking/test/accuracy": stack_accuracy,
+            "Stacking/test/precision": stack_precision,
+            "Stacking/test/recall": stack_recall,
+            "Stacking/test/f1": stack_f1,
+            "best_auc_final": best_auc
+        })
+
+        # Create comprehensive model comparison visualization
+        model_comparison_data = []
+        for model_name, model_result in results.items():
+            model_comparison_data.append([
+                model_name,
+                model_result['auc'],
+                model_result['precision'],
+                model_result['recall'],
+                model_result['f1']
+            ])
+
+        model_comparison_table = wandb.Table(
+            data=model_comparison_data,
+            columns=["Model", "AUC", "Precision", "Recall", "F1"]
+        )
+
+        # Create multiple chart types for better visualization
+        wandb.log({
+            "model_comparison/metrics_table": model_comparison_table,
+            "model_comparison/auc_bar_chart": wandb.plot.bar(
+                model_comparison_table, "Model", "AUC",
+                title=f"Model AUC Comparison (Best: {best_model_name} - {best_auc:.4f})"
+            ),
+            "model_comparison/recall_bar_chart": wandb.plot.bar(
+                model_comparison_table, "Model", "Recall",
+                title="Model Recall Comparison"
+            ),
+            "model_comparison/f1_bar_chart": wandb.plot.bar(
+                model_comparison_table, "Model", "F1",
+                title="Model F1-Score Comparison"
+            ),
+            "best_model/name": wandb.Html(f"<h2 style='color: green;'>Best Model: {best_model_name}</h2><p>AUC: {best_auc:.4f}</p>"),
+            "best_model/auc_score": best_auc
+        })
+
+    # 16. 記錄資料集資訊到 W&B
     if pipeline.use_wandb and pipeline.wandb_run:
         dataset_info = {
             'dataset_info/total_samples': len(df_model),
@@ -1551,6 +1835,146 @@ def train_with_real_data():
     return pipeline, results, woe_encoder
 
 
+def train_with_wandb_sweep():
+    """
+    使用 W&B Sweep 進行自動超參數調優
+    """
+    import wandb
+
+    # Define sweep configuration
+    sweep_config = {
+        'method': 'bayes',  # 貝葉斯優化
+        'metric': {
+            'name': 'val_auc',
+            'goal': 'maximize'
+        },
+        'parameters': {
+            # XGBoost parameters
+            'xgb_n_estimators': {'values': [100, 200, 300, 500]},
+            'xgb_max_depth': {'values': [3, 4, 5, 6, 7]},
+            'xgb_learning_rate': {'distribution': 'log_uniform_values', 'min': 0.01, 'max': 0.3},
+            'xgb_subsample': {'distribution': 'uniform', 'min': 0.6, 'max': 1.0},
+            'xgb_colsample_bytree': {'distribution': 'uniform', 'min': 0.6, 'max': 1.0},
+            'xgb_min_child_weight': {'values': [1, 3, 5, 7]},
+
+            # LightGBM parameters
+            'lgb_n_estimators': {'values': [100, 200, 300, 500]},
+            'lgb_max_depth': {'values': [3, 4, 5, 6, 7]},
+            'lgb_learning_rate': {'distribution': 'log_uniform_values', 'min': 0.01, 'max': 0.3},
+            'lgb_num_leaves': {'values': [15, 31, 63, 127]},
+
+            # Feature engineering
+            'use_target_encoding': {'values': [True, False]},
+            'use_geo_risk': {'values': [True, False]},
+            'use_smote': {'values': [True, False]},
+            'scale_pos_weight': {'distribution': 'uniform', 'min': 10, 'max': 20}
+        }
+    }
+
+    def train_sweep():
+        """Single sweep training run"""
+        run = wandb.init()
+        config = wandb.config
+
+        # Load and preprocess data (same as train_with_real_data)
+        pipeline_temp = AdvancedDefaultPredictionPipeline(random_state=42, use_wandb=False)
+
+        df = pd.read_excel('source/DPM_merged_cleaned.xlsx', engine='openpyxl')
+        df = pipeline_temp.handle_missing_values(df)
+        df = pipeline_temp.convert_data_types(df)
+        df = pipeline_temp.define_default(df)
+        df = pipeline_temp.credit_focused_feature_engineering(df)
+
+        # Remove first row if it's header
+        df = df[df.index != 0].copy()
+
+        categorical_features = ['post code of residential address', 'main business', 'residence status', 'education', 'product']
+        numerical_features = ['month salary', 'job tenure', 'payment_progress_ratio', 'job_stable', 'address_match', 'residence_stable', 'dti_ratio', 'payment_pressure', 'early_overdue_count', 'has_overdue', 'loan term', 'paid installments']
+
+        # Filter features that exist
+        categorical_features = [f for f in categorical_features if f in df.columns]
+        numerical_features = [f for f in numerical_features if f in df.columns]
+
+        X = df[categorical_features + numerical_features].copy()
+        y = df['Default'].values
+
+        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42, stratify=y)
+
+        # WoE Encoding
+        woe_encoder = WoEEncoder()
+        X_train_fe = woe_encoder.fit_transform(X_train, y_train, categorical_features)
+        X_test_fe = woe_encoder.transform(X_test, categorical_features)
+
+        # Optional: Target Encoding
+        if config.use_target_encoding:
+            target_encoder = TargetEncoder(smoothing=1.0)
+            X_train_fe = target_encoder.fit_transform(X_train_fe, y_train, categorical_features)
+            X_test_fe = target_encoder.transform(X_test_fe, categorical_features)
+
+        # Optional: Geographic Risk
+        if config.use_geo_risk:
+            geo_encoder = GeographicRiskEncoder(min_samples=10)
+            X_train_fe = geo_encoder.fit_transform(X_train_fe, y_train)
+            X_test_fe = geo_encoder.transform(X_test_fe)
+
+        # Select features
+        woe_cols = [f'{f}_WoE' for f in categorical_features]
+        feature_cols = numerical_features + woe_cols
+
+        if config.use_target_encoding:
+            feature_cols += [f'{f}_target_enc' for f in categorical_features if f'{f}_target_enc' in X_train_fe.columns]
+        if config.use_geo_risk:
+            feature_cols += [c for c in ['res_risk_score', 'city_risk_score', 'address_stability_risk'] if c in X_train_fe.columns]
+
+        X_train_final = X_train_fe[[f for f in feature_cols if f in X_train_fe.columns]].fillna(0)
+        X_test_final = X_test_fe[[f for f in feature_cols if f in X_test_fe.columns]].fillna(0)
+
+        # Optional: SMOTE
+        if config.use_smote:
+            smote = SMOTE(sampling_strategy=0.3, random_state=42)
+            X_train_final, y_train = smote.fit_resample(X_train_final, y_train)
+
+        # Train models
+        xgb_model = xgb.XGBClassifier(
+            n_estimators=config.xgb_n_estimators, max_depth=config.xgb_max_depth,
+            learning_rate=config.xgb_learning_rate, subsample=config.xgb_subsample,
+            colsample_bytree=config.xgb_colsample_bytree, min_child_weight=config.xgb_min_child_weight,
+            scale_pos_weight=config.scale_pos_weight, random_state=42, eval_metric='auc'
+        )
+        xgb_model.fit(X_train_final, y_train)
+
+        lgb_model = lgb.LGBMClassifier(
+            n_estimators=config.lgb_n_estimators, max_depth=config.lgb_max_depth,
+            learning_rate=config.lgb_learning_rate, num_leaves=config.lgb_num_leaves,
+            subsample=0.8, colsample_bytree=0.8, is_unbalance=True, random_state=42
+        )
+        lgb_model.fit(X_train_final, y_train)
+
+        # Evaluate
+        xgb_pred = xgb_model.predict_proba(X_test_final)[:, 1]
+        lgb_pred = lgb_model.predict_proba(X_test_final)[:, 1]
+        ensemble_pred = (xgb_pred + lgb_pred) / 2
+
+        wandb.log({
+            'val_auc': roc_auc_score(y_test, ensemble_pred),
+            'xgb_auc': roc_auc_score(y_test, xgb_pred),
+            'lgb_auc': roc_auc_score(y_test, lgb_pred),
+            'num_features': len(X_train_final.columns)
+        })
+
+    sweep_id = wandb.sweep(sweep_config, project='DPM-AutoTune')
+    print(f'\nW&B Sweep ID: {sweep_id}')
+    print('Starting hyperparameter optimization...\n')
+    wandb.agent(sweep_id, train_sweep, count=30)
+    print(f'\nView results: https://wandb.ai/your-username/DPM-AutoTune/sweeps/{sweep_id}')
+
+
 if __name__ == "__main__":
-    # 執行真實資料訓練
-    pipeline, results, woe_encoder = train_with_real_data()
+    import sys
+
+    if len(sys.argv) > 1 and sys.argv[1] == '--sweep':
+        # Run W&B Sweep for automatic hyperparameter tuning
+        train_with_wandb_sweep()
+    else:
+        # Run normal training
+        pipeline, results, woe_encoder = train_with_real_data()

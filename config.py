@@ -78,38 +78,47 @@ EDUCATION_RISK_ADJUSTMENTS = {
 # =============================================================================
 
 # Default model hyperparameters
+# OPTIMIZED via W&B Sweep (smooth-sweep-27, AUC=0.8008)
+# Sweep date: 2025-10-15
 MODEL_PARAMS = {
     'XGBoost': {
-        'n_estimators': 200,
-        'max_depth': 5,
-        'learning_rate': 0.1,
-        'subsample': 0.9,
-        'colsample_bytree': 0.9,
-        'min_child_weight': 3,
-        'reg_alpha': 0.1,
-        'reg_lambda': 0.1,
+        'n_estimators': 100,           # Optimized by sweep
+        'max_depth': 4,                # Optimized: shallower trees prevent overfitting
+        'learning_rate': 0.0258,       # Optimized: fine-tuned learning rate
+        'subsample': 0.731,            # Optimized: ~73% row sampling
+        'colsample_bytree': 0.788,     # Optimized: ~79% feature sampling
+        'min_child_weight': 7,         # Optimized: higher regularization
+        'reg_alpha': 0.1,              # L1 regularization
+        'reg_lambda': 1.0,             # L2 regularization
+        'scale_pos_weight': 14.11,     # Optimized: class imbalance handling
+        'gamma': 0.1,                  # Minimum loss reduction
         'random_state': 42,
-        'eval_metric': 'logloss',
+        'eval_metric': 'auc',          # Optimize for AUC
         'verbosity': 0
     },
     'LightGBM': {
-        'n_estimators': 200,
-        'max_depth': 5,
-        'learning_rate': 0.1,
-        'subsample': 0.9,
-        'colsample_bytree': 0.9,
-        'min_child_samples': 20,
-        'reg_alpha': 0.1,
-        'reg_lambda': 0.1,
+        'n_estimators': 200,           # Optimized by sweep
+        'max_depth': 7,                # Optimized: deeper trees for LightGBM
+        'learning_rate': 0.0193,       # Optimized: fine-tuned learning rate
+        'subsample': 0.8,              # Bagging fraction
+        'colsample_bytree': 0.8,       # Feature fraction
+        'min_child_samples': 10,       # Allow smaller leaves
+        'reg_alpha': 0.1,              # L1 regularization
+        'reg_lambda': 1.0,             # L2 regularization
+        'num_leaves': 31,              # Optimized: balanced complexity
+        'min_split_gain': 0.01,        # Minimum gain to split
+        'is_unbalance': True,          # Handle class imbalance
         'random_state': 42,
         'verbosity': -1
     },
     'CatBoost': {
-        'iterations': 200,
-        'depth': 5,
-        'learning_rate': 0.1,
-        'l2_leaf_reg': 3,
-        'border_count': 64,
+        'iterations': 300,             # More iterations
+        'depth': 6,                    # Deeper trees
+        'learning_rate': 0.05,         # Lower LR
+        'l2_leaf_reg': 3,              # L2 regularization
+        'border_count': 128,           # More borders for numerical features
+        'auto_class_weights': 'Balanced',  # Auto balance classes
+        'min_data_in_leaf': 10,        # Allow smaller leaves
         'random_state': 42,
         'verbose': False
     }

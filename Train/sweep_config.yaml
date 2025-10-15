@@ -1,0 +1,188 @@
+# =============================================
+# W&B Sweep Configuration for DPM
+# =============================================
+# This configuration uses Bayesian optimization for hyperparameter tuning
+# Project: DPM (Default Prediction Model)
+# =============================================
+
+program: main.py
+method: bayes  # Options: grid, random, bayes
+project: DPM
+entity: yuczhen29-ccu
+
+metric:
+  name: val_auc
+  goal: maximize
+
+# Early termination for poor performing runs
+early_terminate:
+  type: hyperband
+  min_iter: 5
+  eta: 3
+  s: 2
+
+parameters:
+  # =============================================
+  # XGBoost Parameters
+  # =============================================
+  xgb_n_estimators:
+    values: [100, 200, 300, 500]
+
+  xgb_max_depth:
+    values: [3, 4, 5, 6, 7]
+
+  xgb_learning_rate:
+    distribution: log_uniform_values
+    min: 0.01
+    max: 0.3
+
+  xgb_subsample:
+    distribution: uniform
+    min: 0.6
+    max: 1.0
+
+  xgb_colsample_bytree:
+    distribution: uniform
+    min: 0.6
+    max: 1.0
+
+  xgb_min_child_weight:
+    values: [1, 3, 5, 7]
+
+  xgb_gamma:
+    distribution: uniform
+    min: 0
+    max: 0.5
+
+  xgb_reg_alpha:
+    distribution: log_uniform_values
+    min: 0.001
+    max: 10
+
+  xgb_reg_lambda:
+    distribution: log_uniform_values
+    min: 0.001
+    max: 10
+
+  # =============================================
+  # LightGBM Parameters
+  # =============================================
+  lgb_n_estimators:
+    values: [100, 200, 300, 500]
+
+  lgb_max_depth:
+    values: [3, 4, 5, 6, 7, -1]  # -1 means no limit
+
+  lgb_learning_rate:
+    distribution: log_uniform_values
+    min: 0.01
+    max: 0.3
+
+  lgb_num_leaves:
+    values: [15, 31, 63, 127, 255]
+
+  lgb_min_child_samples:
+    values: [10, 20, 30, 50]
+
+  lgb_subsample:
+    distribution: uniform
+    min: 0.6
+    max: 1.0
+
+  lgb_colsample_bytree:
+    distribution: uniform
+    min: 0.6
+    max: 1.0
+
+  lgb_reg_alpha:
+    distribution: log_uniform_values
+    min: 0.001
+    max: 10
+
+  lgb_reg_lambda:
+    distribution: log_uniform_values
+    min: 0.001
+    max: 10
+
+  # =============================================
+  # CatBoost Parameters
+  # =============================================
+  catboost_iterations:
+    values: [100, 200, 300, 500]
+
+  catboost_depth:
+    values: [3, 4, 5, 6, 7, 8]
+
+  catboost_learning_rate:
+    distribution: log_uniform_values
+    min: 0.01
+    max: 0.3
+
+  catboost_l2_leaf_reg:
+    distribution: log_uniform_values
+    min: 1
+    max: 10
+
+  catboost_border_count:
+    values: [32, 64, 128, 254]
+
+  # =============================================
+  # Feature Engineering Parameters
+  # =============================================
+  use_target_encoding:
+    values: [true, false]
+
+  use_geo_risk:
+    values: [true, false]
+
+  woe_iv_threshold:
+    distribution: uniform
+    min: 0.01
+    max: 0.05
+
+  # =============================================
+  # Data Processing Parameters
+  # =============================================
+  use_smote:
+    values: [true, false]
+
+  smote_sampling_strategy:
+    distribution: uniform
+    min: 0.2
+    max: 0.5
+
+  scale_pos_weight:
+    distribution: uniform
+    min: 10
+    max: 20
+
+  # =============================================
+  # Model Ensemble Parameters
+  # =============================================
+  ensemble_method:
+    values: ['voting', 'stacking', 'weighted_average']
+
+  xgb_weight:
+    distribution: uniform
+    min: 0.2
+    max: 0.5
+
+  lgb_weight:
+    distribution: uniform
+    min: 0.2
+    max: 0.5
+
+  catboost_weight:
+    distribution: uniform
+    min: 0.2
+    max: 0.5
+
+# =============================================
+# Run Configuration
+# =============================================
+command:
+  - ${env}
+  - python
+  - ${program}
+  - "--sweep"
+  - ${args}
