@@ -78,34 +78,35 @@ EDUCATION_RISK_ADJUSTMENTS = {
 # =============================================================================
 
 # Default model hyperparameters
-# OPTIMIZED via W&B Sweep (smooth-sweep-27, AUC=0.8008)
-# Sweep date: 2025-10-15
+# OPTIMIZED via W&B Sweep (ethereal-sweep-27, val_AUC=0.79814)
+# Sweep date: 2025-10-21
+# Features: use_geo_risk=True, use_smote=False, use_target_encoding=False
 MODEL_PARAMS = {
     'XGBoost': {
-        'n_estimators': 100,           # Optimized by sweep
-        'max_depth': 4,                # Optimized: shallower trees prevent overfitting
-        'learning_rate': 0.0258,       # Optimized: fine-tuned learning rate
-        'subsample': 0.731,            # Optimized: ~73% row sampling
-        'colsample_bytree': 0.788,     # Optimized: ~79% feature sampling
-        'min_child_weight': 7,         # Optimized: higher regularization
+        'n_estimators': 200,           # Optimized by sweep
+        'max_depth': 5,                # Optimized: balanced tree depth
+        'learning_rate': 0.024591,     # Optimized: fine-tuned learning rate
+        'subsample': 0.8852,           # Optimized: ~89% row sampling
+        'colsample_bytree': 0.7098,    # Optimized: ~71% feature sampling
+        'min_child_weight': 1,         # Optimized: lower regularization
         'reg_alpha': 0.1,              # L1 regularization
         'reg_lambda': 1.0,             # L2 regularization
-        'scale_pos_weight': 14.11,     # Optimized: class imbalance handling
+        'scale_pos_weight': 14.106,    # Optimized: class imbalance handling
         'gamma': 0.1,                  # Minimum loss reduction
         'random_state': 42,
         'eval_metric': 'auc',          # Optimize for AUC
         'verbosity': 0
     },
     'LightGBM': {
-        'n_estimators': 200,           # Optimized by sweep
-        'max_depth': 7,                # Optimized: deeper trees for LightGBM
-        'learning_rate': 0.0193,       # Optimized: fine-tuned learning rate
+        'n_estimators': 300,           # Optimized by sweep
+        'max_depth': 5,                # Optimized: balanced tree depth
+        'learning_rate': 0.0903,       # Optimized: fine-tuned learning rate
         'subsample': 0.8,              # Bagging fraction
         'colsample_bytree': 0.8,       # Feature fraction
         'min_child_samples': 10,       # Allow smaller leaves
         'reg_alpha': 0.1,              # L1 regularization
         'reg_lambda': 1.0,             # L2 regularization
-        'num_leaves': 31,              # Optimized: balanced complexity
+        'num_leaves': 127,             # Optimized: higher complexity
         'min_split_gain': 0.01,        # Minimum gain to split
         'is_unbalance': True,          # Handle class imbalance
         'random_state': 42,

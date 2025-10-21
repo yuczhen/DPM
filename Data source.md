@@ -109,16 +109,16 @@ creditScore  defaultProb  scoreLevel
 - **計算**: 由我們的程式計算產生
 - **依據**: E 欄 `overdue status` (逾期狀態)
 
-### 定義: M2+ 規則
+### 定義: M1+ 規則 (更新於 2025-10-21)
 
-**違約定義**: 逾期 >= 60 天視為違約
+**違約定義**: 逾期 >= 30 天視為違約
 
 ### 計算公式
 
 ```python
 def classify_default(overdue_status):
     """
-    M2+ 違約定義
+    M1+ 違約定義
 
     Args:
         overdue_status: 逾期狀態 (Current, M0, M1, M2, M3, ...)
@@ -129,15 +129,15 @@ def classify_default(overdue_status):
     """
     status_str = str(overdue_status).strip()
 
-    # 正常: 未逾期或逾期 < 60 天
-    if status_str in ['Current', 'M0', 'M1']:
+    # 正常: 未逾期或逾期 < 30 天
+    if status_str in ['Current', 'M0']:
         return 0
 
-    # 違約: 逾期 >= 60 天 (M2+)
+    # 違約: 逾期 >= 30 天 (M1+)
     elif status_str.startswith('M'):
         try:
             m_number = int(status_str[1:])  # 提取數字
-            return 1 if m_number >= 2 else 0
+            return 1 if m_number >= 1 else 0
         except:
             return 0
 
@@ -150,22 +150,26 @@ def classify_default(overdue_status):
 |---------------|---------|---------|------|
 | **Current** | 0 天 | 0 (正常) | 當期正常 |
 | **M0** | 1-30 天 | 0 (正常) | 逾期 < 30 天 |
-| **M1** | 31-60 天 | 0 (正常) | 逾期 31-60 天 |
+| **M1** | 31-60 天 | **1 (違約)** | 逾期 31-60 天 |
 | **M2** | 61-90 天 | **1 (違約)** | 逾期 61-90 天 |
 | **M3** | 91-120 天 | **1 (違約)** | 逾期 91-120 天 |
 | **M4+** | > 120 天 | **1 (違約)** | 逾期 > 120 天 |
 
-### 統計資訊
+### 統計資訊 (M1+ 定義)
 
 ```
 資料型態: int64 (0 or 1)
 有效值: 13,352 筆 (100%)
 
-分佈:
+預估分佈 (M1+ 定義):
+  Default = 0 (正常): ~9,500-10,000 筆 (70-75%)
+  Default = 1 (違約): ~3,500-4,000 筆 (25-30%)
+
+預估違約率: 25-30% (較 M2+ 的 15.22% 更平衡)
+
+舊統計 (M2+ 定義 - 已棄用):
   Default = 0 (正常): 11,320 筆 (84.78%)
   Default = 1 (違約): 2,032 筆 (15.22%)
-
-違約率: 15.22%
 ```
 
 ### 範例資料
@@ -177,7 +181,7 @@ Current         0        正常
 M30             1        違約 (逾期 30 個月)
 M36             1        違約 (逾期 36 個月)
 M0              0        正常 (逾期 < 30 天)
-M1              0        正常 (逾期 31-60 天)
+M1              1        違約 (逾期 31-60 天) ← M1+ 定義變更!
 ```
 
 ### 用途
