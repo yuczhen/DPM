@@ -68,15 +68,21 @@ Thumbs.db
 # Environment variables
 .env
 
-# 暫時不上傳的檔案
-Train/ANALYSIS_SUMMARY.md
-Train/check_salary.py
-Train/fix_salary_ranges.py
-Train/main2.py
-Train/step1_handle_missing_values.py
-ANALYSIS_SUMMARY.md
-create_mini_dataset.py
-
 # Backup files
 *.bak
 *.backup
+
+# --- Windows reserved names (avoid git add error) ---
+NUL
+nul
+CON
+PRN
+AUX
+COM1
+COM2
+COM3
+LPT1
+
+# Windows thumbnails / metadata
+Thumbs.db
+Desktop.ini
