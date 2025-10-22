@@ -61,6 +61,12 @@ import sys
 sys.path.append('..')
 import config
 
+# Import feature engineering from dedicated module
+from feature_engineering import (
+    OverduePatternEncoder,
+    GeographicRiskEncoder
+)
+
 # W&B 實驗追蹤
 try:
     import wandb
@@ -637,58 +643,34 @@ class AdvancedDefaultPredictionPipeline:
         df_fe['has_overdue'] = (df_fe['early_overdue_count'] > 0).astype(int)
         print("  + has_overdue (binary flag)")
 
+        # === Tier 1: Overdue Pattern Features (ENHANCED!) ===
+        print("\n[5/5] Tier 1: Enhanced Overdue Pattern Analysis")
+        overdue_encoder = OverduePatternEncoder()
+        df_fe = overdue_encoder.create_overdue_pattern_features(df_fe)
+
         print(f"\nFeature engineering completed!")
         print(f"  Original features: {len(df.columns)}")
-        print(f"  New features added: 8")
-        print(f"  Total features: {len(df_fe.columns)}")
+        print(f"  Total features after engineering: {len(df_fe.columns)}")
+        print(f"  New features added: {len(df_fe.columns) - len(df.columns)}")
 
         return df_fe
 
     def prepare_features_for_modeling(self, df):
         """
-        準備建模特徵
+        準備建模特徵 - 使用 feature_engineering.py 的統一特徵列表
 
         Returns:
             categorical_features: 需要 WoE 編碼的分類特徵
             numerical_features: 數值特徵
         """
+        from feature_engineering import get_feature_lists
+
         print("\n" + "=" * 70)
         print("Prepare Features for Modeling")
         print("=" * 70)
 
-        # 徵審權重優先的分類特徵
-        categorical_features = [
-            'post code of residential address',  # 居住郵遞區號 (聯絡穩定性)
-            'main business',                      # 主要經營業務 (工作穩定性)
-            'residence status',                   # 居住狀況 (財務穩定性)
-            'education',                          # 教育程度
-            'product',                            # 產品別
-        ]
-
-        # 數值特徵
-        numerical_features = [
-            # 財務能力
-            'month salary',
-            'job tenure',
-            'payment_progress_ratio',
-            'job_stable',
-
-            # 聯絡穩定性
-            'address_match',
-            'residence_stable',
-
-            # DTI - CRITICAL!
-            'dti_ratio',
-            'payment_pressure',
-
-            # 逾期行為 (早期)
-            'early_overdue_count',
-            'has_overdue',
-
-            # 原始特徵
-            'loan term',
-            'paid installments',
-        ]
+        # 使用統一的特徵列表（包含 Tier 1 特徵）
+        categorical_features, numerical_features, _ = get_feature_lists()
 
         # 過濾實際存在的欄位
         categorical_features = [f for f in categorical_features if f in df.columns]
