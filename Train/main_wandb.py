@@ -860,14 +860,62 @@ class AdvancedDefaultPredictionPipeline:
         print(f"重採樣後分佈 - 正常: {(~y_resampled.astype(bool)).sum():,}, 違約: {y_resampled.sum():,}")
         return X_resampled, y_resampled
     
-    def initialize_models(self):
+    def initialize_models(self, use_best_params=False, best_params_path='Train/best_params.json'):
         """
-        初始化多個模型，使用config中的預設參數
+        初始化多個模型，使用config中的預設參數或WandB最佳參數
+
+        Args:
+            use_best_params: 是否使用 WandB Sweep 的最佳超參數
+            best_params_path: 最佳超參數 JSON 檔案路徑
         """
+        # 決定使用哪一組參數
+        if use_best_params and os.path.exists(best_params_path):
+            print("\n" + "=" * 70)
+            print("Loading Best Parameters from WandB")
+            print("=" * 70)
+
+            try:
+                with open(best_params_path, 'r', encoding='utf-8') as f:
+                    best_params = json.load(f)
+
+                print(f"[OK] Loaded best parameters from: {best_params['metadata']['run_name']}")
+                print(f"     Best val_auc: {best_params['metadata']['val_auc']:.4f}")
+
+                model_params = {
+                    'XGBoost': best_params['XGBoost'],
+                    'LightGBM': best_params['LightGBM'],
+                    'CatBoost': best_params['CatBoost']
+                }
+
+            except Exception as e:
+                print(f"[WARNING] Failed to load {best_params_path}: {e}")
+                print(f"[INFO] Using config.py parameters")
+                model_params = config.MODEL_PARAMS
+
+        else:
+            if use_best_params:
+                print(f"\n[WARNING] {best_params_path} not found")
+                print(f"[INFO] Run 'python main_wandb.py --fetch-best' first")
+            print(f"[INFO] Using default parameters from config.py")
+            model_params = config.MODEL_PARAMS
+
+        # 確保必要的參數存在
+        for model_name in ['XGBoost', 'LightGBM', 'CatBoost']:
+            if 'random_state' not in model_params[model_name]:
+                model_params[model_name]['random_state'] = self.random_state
+            if model_name == 'XGBoost' and 'eval_metric' not in model_params[model_name]:
+                model_params[model_name]['eval_metric'] = 'auc'
+            if model_name == 'XGBoost' and 'verbosity' not in model_params[model_name]:
+                model_params[model_name]['verbosity'] = 0
+            if model_name == 'LightGBM' and 'verbosity' not in model_params[model_name]:
+                model_params[model_name]['verbosity'] = -1
+            if model_name == 'CatBoost' and 'verbose' not in model_params[model_name]:
+                model_params[model_name]['verbose'] = False
+
         self.models = {
-            'XGBoost': xgb.XGBClassifier(**config.MODEL_PARAMS['XGBoost']),
-            'LightGBM': lgb.LGBMClassifier(**config.MODEL_PARAMS['LightGBM']),
-            'CatBoost': CatBoostClassifier(**config.MODEL_PARAMS['CatBoost'])
+            'XGBoost': xgb.XGBClassifier(**model_params['XGBoost']),
+            'LightGBM': lgb.LGBMClassifier(**model_params['LightGBM']),
+            'CatBoost': CatBoostClassifier(**model_params['CatBoost'])
         }
 
         return self.models
@@ -1303,14 +1351,23 @@ class AdvancedDefaultPredictionPipeline:
 # MAIN EXECUTION - Real Data Training
 # =============================================================================
 
-def train_with_real_data():
+def train_with_real_data(use_best_params=False, best_params_path='Train/best_params.json'):
     """
     使用真實 DPM 資料訓練模型
     完整流程：載入 → 清理 → 特徵工程 → WoE 編碼 → 訓練
+
+    Args:
+        use_best_params: 是否使用 WandB Sweep 的最佳超參數
+        best_params_path: 最佳超參數 JSON 檔案路徑
     """
     print("=" * 80)
     print("DPM Model Training with Real Data")
     print("=" * 80)
+
+    if use_best_params:
+        print("\n[MODE] Using BEST PARAMETERS from WandB Sweep")
+    else:
+        print("\n[MODE] Using DEFAULT PARAMETERS from config.py")
 
     # 1. 初始化 Pipeline
     print("\n[Step 1/8] Initialize Pipeline")
@@ -1400,7 +1457,8 @@ def train_with_real_data():
     print("Model Training")
     print("=" * 80)
 
-    models = pipeline.initialize_models()
+    models = pipeline.initialize_models(use_best_params=use_best_params,
+                                       best_params_path=best_params_path)
     results = {}
 
     for model_name, model in models.items():
@@ -1457,11 +1515,12 @@ def train_with_real_data():
             y_pred_array = y_pred if isinstance(y_pred, np.ndarray) else np.array(y_pred)
 
             wandb.log({
-                f"{model_name}/confusion_matrix": wandb.plot.confusion_matrix(
+                f"{model_name}/confusion_matrix_default_threshold": wandb.plot.confusion_matrix(
                     probs=None,
                     y_true=y_test_array.tolist(),
                     preds=y_pred_array.tolist(),
-                    class_names=['Normal', 'Default']
+                    class_names=['Normal', 'Default'],
+                    title=f"{model_name} Confusion Matrix (Threshold=0.5)"
                 )
             })
 
@@ -1657,12 +1716,27 @@ def train_with_real_data():
 
         # Log to W&B
         if pipeline.use_wandb and pipeline.wandb_run:
+            # Log optimal threshold metrics
             wandb.log({
                 f"{model_name}/optimal_threshold": optimal_thresh,
                 f"{model_name}/optimal/recall": optimal_recall,
                 f"{model_name}/optimal/precision": optimal_precision,
                 f"{model_name}/optimal/f1": optimal_f1,
                 f"{model_name}/optimal/f2": optimal_f2
+            })
+
+            # Log optimal confusion matrix (使用 optimal threshold)
+            y_test_array = y_test.values if hasattr(y_test, 'values') else np.array(y_test)
+            y_pred_optimal_array = y_pred_optimal if isinstance(y_pred_optimal, np.ndarray) else np.array(y_pred_optimal)
+
+            wandb.log({
+                f"{model_name}/confusion_matrix_optimal_threshold": wandb.plot.confusion_matrix(
+                    probs=None,
+                    y_true=y_test_array.tolist(),
+                    preds=y_pred_optimal_array.tolist(),
+                    class_names=['Normal', 'Default'],
+                    title=f"{model_name} Confusion Matrix (Optimal Threshold={optimal_thresh:.3f}, F2-optimized)"
+                )
             })
 
     # 16. Stacking Ensemble
@@ -1742,6 +1816,25 @@ def train_with_real_data():
         'f1': stack_optimal_f1
     }
 
+    # Log Stacking optimal confusion matrix to W&B
+    if pipeline.use_wandb and pipeline.wandb_run:
+        y_test_array = y_test.values if hasattr(y_test, 'values') else np.array(y_test)
+        stack_pred_optimal_array = stack_pred_optimal if isinstance(stack_pred_optimal, np.ndarray) else np.array(stack_pred_optimal)
+
+        wandb.log({
+            "Stacking/confusion_matrix_optimal": wandb.plot.confusion_matrix(
+                probs=None,
+                y_true=y_test_array.tolist(),
+                preds=stack_pred_optimal_array.tolist(),
+                class_names=['Normal', 'Default']
+            ),
+            "Stacking/optimal_threshold": stack_optimal_thresh,
+            "Stacking/optimal/recall": stack_optimal_recall,
+            "Stacking/optimal/precision": stack_optimal_precision,
+            "Stacking/optimal/f1": stack_optimal_f1,
+            "Stacking/optimal/f2": stack_optimal_f2
+        })
+
     # Update best model if stacking is better
     if stack_auc > best_auc:
         best_model_name = 'Stacking'
@@ -1819,6 +1912,290 @@ def train_with_real_data():
     return pipeline, results, woe_encoder
 
 
+def update_config_model_params(best_params, config_path='../config.py'):
+    """
+    更新 config.py 中的 MODEL_PARAMS
+
+    Args:
+        best_params: 最佳超參數字典
+        config_path: config.py 的路徑
+
+    Returns:
+        success: 是否更新成功
+    """
+    try:
+        # 讀取 config.py
+        with open(config_path, 'r', encoding='utf-8') as f:
+            lines = f.readlines()
+
+        # 找到 MODEL_PARAMS 的開始和結束位置
+        start_idx = None
+        end_idx = None
+        brace_count = 0
+
+        for i, line in enumerate(lines):
+            if 'MODEL_PARAMS = {' in line:
+                start_idx = i
+                brace_count = 1
+                continue
+
+            if start_idx is not None:
+                brace_count += line.count('{') - line.count('}')
+                if brace_count == 0:
+                    end_idx = i
+                    break
+
+        if start_idx is None or end_idx is None:
+            print("[ERROR] Could not find MODEL_PARAMS in config.py")
+            return False
+
+        # 建立新的 MODEL_PARAMS 內容
+        metadata = best_params.get('metadata', {})
+        new_params_lines = [
+            "# Default model hyperparameters\n",
+            f"# AUTO-UPDATED by WandB Sweep\n",
+            f"# Updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n",
+            f"# Source: WandB run '{metadata.get('run_name', 'unknown')}'\n",
+            f"# Best val_auc: {metadata.get('val_auc', 0):.4f}\n",
+            "MODEL_PARAMS = {\n"
+        ]
+
+        # XGBoost 參數
+        xgb_params = best_params.get('XGBoost', {})
+        new_params_lines.append("    'XGBoost': {\n")
+        for key, value in sorted(xgb_params.items()):
+            if isinstance(value, str):
+                new_params_lines.append(f"        '{key}': '{value}',\n")
+            else:
+                new_params_lines.append(f"        '{key}': {value},\n")
+        # 補充必要的參數
+        if 'random_state' not in xgb_params:
+            new_params_lines.append("        'random_state': 42,\n")
+        if 'eval_metric' not in xgb_params:
+            new_params_lines.append("        'eval_metric': 'auc',\n")
+        if 'verbosity' not in xgb_params:
+            new_params_lines.append("        'verbosity': 0\n")
+        else:
+            # 移除最後一個逗號
+            new_params_lines[-1] = new_params_lines[-1].rstrip(',\n') + '\n'
+        new_params_lines.append("    },\n")
+
+        # LightGBM 參數
+        lgb_params = best_params.get('LightGBM', {})
+        new_params_lines.append("    'LightGBM': {\n")
+        for key, value in sorted(lgb_params.items()):
+            if isinstance(value, str):
+                new_params_lines.append(f"        '{key}': '{value}',\n")
+            else:
+                new_params_lines.append(f"        '{key}': {value},\n")
+        # 補充必要的參數
+        if 'is_unbalance' not in lgb_params:
+            new_params_lines.append("        'is_unbalance': True,\n")
+        if 'random_state' not in lgb_params:
+            new_params_lines.append("        'random_state': 42,\n")
+        if 'verbosity' not in lgb_params:
+            new_params_lines.append("        'verbosity': -1\n")
+        else:
+            new_params_lines[-1] = new_params_lines[-1].rstrip(',\n') + '\n'
+        new_params_lines.append("    },\n")
+
+        # CatBoost 參數
+        cat_params = best_params.get('CatBoost', {})
+        new_params_lines.append("    'CatBoost': {\n")
+        for key, value in sorted(cat_params.items()):
+            if isinstance(value, str):
+                new_params_lines.append(f"        '{key}': '{value}',\n")
+            else:
+                new_params_lines.append(f"        '{key}': {value},\n")
+        # 補充必要的參數
+        if 'auto_class_weights' not in cat_params:
+            new_params_lines.append("        'auto_class_weights': 'Balanced',\n")
+        if 'random_state' not in cat_params:
+            new_params_lines.append("        'random_state': 42,\n")
+        if 'verbose' not in cat_params:
+            new_params_lines.append("        'verbose': False\n")
+        else:
+            new_params_lines[-1] = new_params_lines[-1].rstrip(',\n') + '\n'
+        new_params_lines.append("    }\n")
+        new_params_lines.append("}\n")
+
+        # 替換 config.py 中的內容
+        new_lines = lines[:start_idx] + new_params_lines + lines[end_idx+1:]
+
+        # 寫回 config.py
+        with open(config_path, 'w', encoding='utf-8') as f:
+            f.writelines(new_lines)
+
+        print(f"\n[OK] config.py updated successfully!")
+        print(f"     Path: {config_path}")
+        print(f"     Source: {metadata.get('run_name', 'unknown')}")
+        print(f"     Best val_auc: {metadata.get('val_auc', 0):.4f}")
+
+        return True
+
+    except Exception as e:
+        print(f"[ERROR] Failed to update config.py: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
+
+
+def get_best_params_from_wandb(project_name="DPM-AutoTune", entity=None, update_config=True):
+    """
+    從 WandB 專案抓取最佳超參數並更新 config.py
+
+    Args:
+        project_name: WandB 專案名稱
+        entity: WandB entity (用戶名)
+        update_config: 是否自動更新 config.py
+
+    Returns:
+        best_params: 最佳超參數字典，如果失敗返回 None
+    """
+    try:
+        import wandb
+        api = wandb.Api()
+
+        entity = entity or os.getenv('WANDB_ENTITY', 'yuczhen29-ccu')
+        runs = api.runs(f"{entity}/{project_name}")
+
+        # 過濾有 val_auc 的 runs 並抓取 val_auc 值 (避免 summary API 問題)
+        valid_runs_with_auc = []
+        print(f"[INFO] Scanning {len(list(runs))} runs...")
+
+        for r in runs:
+            try:
+                # 嘗試多種方式讀取 summary
+                summary_dict = None
+
+                # 方法 1: _json_dict 屬性
+                if hasattr(r.summary, '_json_dict'):
+                    summary_dict = r.summary._json_dict
+                # 方法 2: _summary 屬性
+                elif hasattr(r, '_summary'):
+                    summary_dict = r._summary
+                # 方法 3: 嘗試轉換成字典
+                elif hasattr(r.summary, '__iter__'):
+                    try:
+                        summary_dict = {k: v for k, v in r.summary.items()}
+                    except:
+                        pass
+
+                if summary_dict and 'val_auc' in summary_dict:
+                    val_auc = summary_dict['val_auc']
+                    if isinstance(val_auc, (int, float)):
+                        valid_runs_with_auc.append((r, float(val_auc)))
+            except Exception as e:
+                # 忽略無法讀取的 runs
+                continue
+
+        if not valid_runs_with_auc:
+            print(f"[WARNING] No runs with val_auc found in {project_name}")
+            return None
+
+        print(f"[INFO] Found {len(valid_runs_with_auc)} runs with val_auc")
+
+        # 找最佳 run
+        best_run, best_auc_value = sorted(valid_runs_with_auc, key=lambda x: x[1], reverse=True)[0]
+
+        print("\n" + "=" * 70)
+        print("Best Run from WandB")
+        print("=" * 70)
+        print(f"Run Name: {best_run.name}")
+        print(f"Run ID: {best_run.id}")
+        print(f"val_auc: {best_auc_value:.4f}")
+        print(f"URL: {best_run.url}")
+
+        # 提取超參數
+        best_params = {
+            'XGBoost': {},
+            'LightGBM': {},
+            'CatBoost': {},
+            'metadata': {
+                'run_name': best_run.name,
+                'run_id': best_run.id,
+                'val_auc': best_auc_value,
+                'updated_at': datetime.now().isoformat()
+            }
+        }
+
+        # 確保 config 是字典格式
+        config_dict = dict(best_run.config) if hasattr(best_run.config, 'items') else {}
+
+        print(f"\n[DEBUG] Found {len(config_dict)} config parameters")
+
+        # XGBoost 參數
+        xgb_count = 0
+        for key, value in config_dict.items():
+            if key.startswith('xgb_'):
+                param_name = key[4:]  # 移除 'xgb_' 前綴
+                best_params['XGBoost'][param_name] = value
+                xgb_count += 1
+        print(f"  - XGBoost: {xgb_count} parameters")
+
+        # LightGBM 參數
+        lgb_count = 0
+        for key, value in config_dict.items():
+            if key.startswith('lgb_'):
+                param_name = key[4:]  # 移除 'lgb_' 前綴
+                best_params['LightGBM'][param_name] = value
+                lgb_count += 1
+        print(f"  - LightGBM: {lgb_count} parameters")
+
+        # CatBoost 參數
+        cat_count = 0
+        for key, value in config_dict.items():
+            if key.startswith('catboost_'):
+                param_name = key[9:]  # 移除 'catboost_' 前綴
+                best_params['CatBoost'][param_name] = value
+                cat_count += 1
+        print(f"  - CatBoost: {cat_count} parameters")
+
+        # 特徵工程參數
+        best_params['feature_engineering'] = {
+            'use_target_encoding': config_dict.get('use_target_encoding', False),
+            'use_geo_risk': config_dict.get('use_geo_risk', False),
+            'use_smote': config_dict.get('use_smote', False),
+            'scale_pos_weight': config_dict.get('scale_pos_weight', 3.82),
+        }
+
+        # 檢查是否有足夠的參數
+        if xgb_count == 0 and lgb_count == 0 and cat_count == 0:
+            print("\n[WARNING] No model parameters found in run config")
+            print("[INFO] Available config keys:")
+            for key in list(config_dict.keys())[:10]:  # 顯示前 10 個
+                print(f"  - {key}")
+            return None
+
+        # 儲存到 JSON
+        json_path = 'Train/best_params.json'
+        os.makedirs('Train', exist_ok=True)
+        with open(json_path, 'w', encoding='utf-8') as f:
+            json.dump(best_params, f, indent=2, ensure_ascii=False)
+
+        print(f"\n[OK] Best parameters saved to {json_path}")
+
+        # 自動更新 config.py
+        if update_config:
+            print("\n" + "=" * 70)
+            print("Updating config.py...")
+            print("=" * 70)
+            update_success = update_config_model_params(best_params, '../config.py')
+
+            if update_success:
+                print("\n✅ config.py has been updated with best parameters!")
+                print("   Both main.py and main_wandb.py will now use these parameters.")
+            else:
+                print("\n⚠️ Failed to update config.py automatically")
+                print("   But parameters are saved in Train/best_params.json")
+
+        return best_params
+
+    except Exception as e:
+        print(f"[ERROR] Failed to fetch best params from WandB: {e}")
+        return None
+
+
 def train_with_wandb_sweep():
     """
     使用 W&B Sweep 進行自動超參數調優
@@ -1840,18 +2217,34 @@ def train_with_wandb_sweep():
             'xgb_subsample': {'distribution': 'uniform', 'min': 0.6, 'max': 1.0},
             'xgb_colsample_bytree': {'distribution': 'uniform', 'min': 0.6, 'max': 1.0},
             'xgb_min_child_weight': {'values': [1, 3, 5, 7]},
+            'xgb_gamma': {'distribution': 'uniform', 'min': 0, 'max': 0.5},
+            'xgb_reg_alpha': {'distribution': 'log_uniform_values', 'min': 0.001, 'max': 10},
+            'xgb_reg_lambda': {'distribution': 'log_uniform_values', 'min': 0.001, 'max': 10},
 
             # LightGBM parameters
             'lgb_n_estimators': {'values': [100, 200, 300, 500]},
-            'lgb_max_depth': {'values': [3, 4, 5, 6, 7]},
+            'lgb_max_depth': {'values': [3, 4, 5, 6, 7, -1]},
             'lgb_learning_rate': {'distribution': 'log_uniform_values', 'min': 0.01, 'max': 0.3},
-            'lgb_num_leaves': {'values': [15, 31, 63, 127]},
+            'lgb_num_leaves': {'values': [15, 31, 63, 127, 255]},
+            'lgb_min_child_samples': {'values': [10, 20, 30, 50]},
+            'lgb_subsample': {'distribution': 'uniform', 'min': 0.6, 'max': 1.0},
+            'lgb_colsample_bytree': {'distribution': 'uniform', 'min': 0.6, 'max': 1.0},
+            'lgb_reg_alpha': {'distribution': 'log_uniform_values', 'min': 0.001, 'max': 10},
+            'lgb_reg_lambda': {'distribution': 'log_uniform_values', 'min': 0.001, 'max': 10},
+
+            # CatBoost parameters
+            'catboost_iterations': {'values': [100, 200, 300, 500]},
+            'catboost_depth': {'values': [3, 4, 5, 6, 7, 8]},
+            'catboost_learning_rate': {'distribution': 'log_uniform_values', 'min': 0.01, 'max': 0.3},
+            'catboost_l2_leaf_reg': {'distribution': 'log_uniform_values', 'min': 1, 'max': 10},
+            'catboost_border_count': {'values': [32, 64, 128, 254]},
 
             # Feature engineering
             'use_target_encoding': {'values': [True, False]},
             'use_geo_risk': {'values': [True, False]},
             'use_smote': {'values': [True, False]},
-            'scale_pos_weight': {'distribution': 'uniform', 'min': 10, 'max': 20}
+            'smote_sampling_strategy': {'distribution': 'uniform', 'min': 0.2, 'max': 0.5},
+            'scale_pos_weight': {'distribution': 'uniform', 'min': 2, 'max': 6}  # M1+ definition (20.75% default rate)
         }
     }
 
@@ -1872,8 +2265,14 @@ def train_with_wandb_sweep():
         # Remove first row if it's header
         df = df[df.index != 0].copy()
 
-        categorical_features = ['post code of residential address', 'main business', 'residence status', 'education', 'product']
-        numerical_features = ['month salary', 'job tenure', 'payment_progress_ratio', 'job_stable', 'address_match', 'residence_stable', 'dti_ratio', 'payment_pressure', 'early_overdue_count', 'has_overdue', 'loan term', 'paid installments']
+        # === Tier 1: Overdue Pattern Features (CRITICAL for 0.9+ AUC!) ===
+        print("\n[Sweep] Adding Tier 1 Overdue Pattern Features...")
+        overdue_encoder = OverduePatternEncoder()
+        df = overdue_encoder.create_overdue_pattern_features(df)
+
+        # Use unified feature lists (includes Tier 1 features)
+        from feature_engineering import get_feature_lists
+        categorical_features, numerical_features, _ = get_feature_lists()
 
         # Filter features that exist
         categorical_features = [f for f in categorical_features if f in df.columns]
@@ -1946,19 +2345,125 @@ def train_with_wandb_sweep():
             'num_features': len(X_train_final.columns)
         })
 
+    # 用於追蹤最佳 run
+    global_best_auc = 0
+    global_best_config = None
+
+    def train_sweep_with_tracking():
+        """包裝的 train_sweep，追蹤最佳配置"""
+        nonlocal global_best_auc, global_best_config
+
+        # 執行原本的訓練
+        train_sweep()
+
+        # 取得當前 run 的結果
+        current_run = wandb.run
+        if current_run:
+            current_auc = current_run.summary.get('val_auc', 0)
+            if current_auc > global_best_auc:
+                global_best_auc = current_auc
+                global_best_config = dict(current_run.config)
+                print(f"\n[NEW BEST] val_auc: {current_auc:.4f}")
+
+                # 即時儲存最佳參數
+                best_params = {
+                    'XGBoost': {},
+                    'LightGBM': {},
+                    'CatBoost': {},
+                    'metadata': {
+                        'run_name': current_run.name,
+                        'run_id': current_run.id,
+                        'val_auc': current_auc,
+                        'updated_at': datetime.now().isoformat()
+                    }
+                }
+
+                # 提取參數
+                for key, value in global_best_config.items():
+                    if key.startswith('xgb_'):
+                        best_params['XGBoost'][key[4:]] = value
+                    elif key.startswith('lgb_'):
+                        best_params['LightGBM'][key[4:]] = value
+                    elif key.startswith('catboost_'):
+                        best_params['CatBoost'][key[9:]] = value
+
+                # 儲存到 JSON
+                json_path = 'Train/best_params.json'
+                os.makedirs('Train', exist_ok=True)
+                with open(json_path, 'w', encoding='utf-8') as f:
+                    json.dump(best_params, f, indent=2, ensure_ascii=False)
+
+                # 更新 config.py
+                try:
+                    update_config_model_params(best_params, '../config.py')
+                except:
+                    pass
+
     sweep_id = wandb.sweep(sweep_config, project='DPM-AutoTune')
     print(f'\nW&B Sweep ID: {sweep_id}')
     print('Starting hyperparameter optimization...\n')
-    wandb.agent(sweep_id, train_sweep, count=30)
-    print(f'\nView results: https://wandb.ai/your-username/DPM-AutoTune/sweeps/{sweep_id}')
+    wandb.agent(sweep_id, train_sweep_with_tracking, count=30)
+
+    print("\n" + "=" * 80)
+    print("✅ Sweep Completed!")
+    print("=" * 80)
+    print(f'View results: https://wandb.ai/yuczhen29-ccu/DPM-AutoTune/sweeps/{sweep_id}')
+
+    if global_best_auc > 0:
+        print("\n" + "=" * 80)
+        print("✅ Best Parameters Saved!")
+        print("=" * 80)
+        print(f"Best val_auc: {global_best_auc:.4f}")
+        print(f"Parameters saved to: Train/best_params.json")
+        print(f"config.py has been updated!")
+        print(f"\nNext step: Run training with best params")
+        print(f"  python main_wandb.py --use-best")
+        print(f"  or")
+        print(f"  python main.py  (也會使用最佳參數)")
+    else:
+        print("\n[WARNING] No runs completed successfully")
+        print("Please check the sweep results on WandB")
 
 
 if __name__ == "__main__":
     import sys
+    import argparse
 
-    if len(sys.argv) > 1 and sys.argv[1] == '--sweep':
-        # Run W&B Sweep for automatic hyperparameter tuning
+    parser = argparse.ArgumentParser(description='DPM Model Training with WandB')
+    parser.add_argument('--sweep', action='store_true',
+                       help='Run W&B Sweep for hyperparameter tuning (自動調優)')
+    parser.add_argument('--use-best', action='store_true',
+                       help='Use best parameters from WandB (使用最佳參數)')
+    parser.add_argument('--fetch-best', action='store_true',
+                       help='Fetch best parameters from WandB (手動抓取最佳參數)')
+
+    args = parser.parse_args()
+
+    if args.sweep:
+        # 執行 Sweep 並自動抓取最佳參數
+        print("=" * 80)
+        print("Starting W&B Sweep for Hyperparameter Tuning")
+        print("=" * 80)
         train_with_wandb_sweep()
+
+    elif args.fetch_best:
+        # 手動抓取最佳參數
+        print("=" * 80)
+        print("Fetching Best Parameters from WandB")
+        print("=" * 80)
+
+        best_params = get_best_params_from_wandb(project_name='DPM-AutoTune')
+
+        if best_params:
+            print(f"\n[SUCCESS] Best parameters saved to Train/best_params.json")
+            print(f"\nNext step: Run training with best parameters:")
+            print(f"  python main_wandb.py --use-best")
+        else:
+            print(f"\n[ERROR] Failed to fetch best parameters")
+
     else:
-        # Run normal training
-        pipeline, results, woe_encoder = train_with_real_data()
+        # 正常訓練（可選擇是否使用最佳參數）
+        pipeline, results, woe_encoder = train_with_real_data(
+            use_best_params=args.use_best,
+            best_params_path='Train/best_params.json'
+        )

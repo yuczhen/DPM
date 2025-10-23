@@ -16,26 +16,32 @@ This project implements an enterprise-grade default prediction system for **exis
 
 ```
 DPM/
-├── .env                        # Environment variables (W&B API key, DB config)
-├── config.py                   # Configuration and scoring standards
-├── config/
-│   └── data_config.py          # Data processing and temporal configuration
-├── db_logger.py                # Database logging for experiments and predictions
-├── example_time_aware_training.py # Time-aware training example
-├── Train/
-│   └── main.py                 # Main training pipeline with time-aware features
-├── README.md                   # Project documentation
+├── config.py                   # Configuration (auto-updated by Sweep) ⭐
 ├── requirements.txt            # Python dependencies
-├── models/                     # Saved model artifacts
-│   ├── XGBoost.pkl
-│   ├── LightGBM.pkl
-│   ├── CatBoost.pkl
-│   ├── ensemble_model.pkl
-│   └── preprocessing_pipeline.pkl
-└── Train/Source/               # Data files
-    ├── raw/                    # Raw input data
-    ├── processed/              # Processed datasets
-    └── *.csv, *.xlsx           # Original datasets
+│
+├── Train/                      # Training System ⭐
+│   ├── main_wandb.py           # Training with WandB tracking
+│   ├── main.py                 # Training without WandB
+│   ├── feature_engineering.py  # Feature engineering module
+│   ├── sweep_config.yaml       # WandB Sweep configuration
+│   │
+│   ├── Source/                 # Training data
+│   │   └── DPM_merged_cleaned.xlsx
+│   │
+│   ├── Result/                 # Training results
+│   │   └── *.csv (metrics, SHAP analysis)
+│   │
+│   ├── models/                 # Trained models ⭐
+│   │   ├── best_model_stacking.pkl
+│   │   └── woe_encoder.pkl
+│   │
+│   └── Train/
+│       └── best_params.json    # Best hyperparameters ⭐
+│
+└── Prediction/                 # Prediction System ⭐
+    ├── predict.py              # Prediction main script
+    ├── Source/                 # New client data
+    └── Result/                 # Prediction results
 ```
 
 ## 🚀 Features
@@ -120,76 +126,68 @@ python-dotenv>=1.0.0    # Environment variables
 
 ## 📖 Usage
 
-### Quick Start
+### Training Models
 
-```python
-from Train.main import AdvancedDefaultPredictionPipeline
-import config
+```bash
+cd Train
 
-# Initialize the pipeline
-pipeline = AdvancedDefaultPredictionPipeline(random_state=42)
+# Option 1: Run Sweep to find best hyperparameters (recommended, first time)
+python main_wandb.py --sweep
+# -> Auto-saves best params to config.py and best_params.json
 
-# Generate or load data
-data = pipeline.generate_dataset(n_samples=10000)
+# Option 2: Train with best parameters
+python main_wandb.py --use-best
 
-# Feature engineering
-processed_data = pipeline.advanced_feature_engineering(data)
+# Option 3: Train with config.py parameters
+python main_wandb.py
 
-# Split data
-X_train, X_val, X_test, y_train, y_val, y_test = pipeline.advanced_train_test_split(processed_data)
-
-# Create preprocessing pipeline
-preprocessing = pipeline.create_preprocessing_pipeline()
-
-# Transform data
-X_train_processed = preprocessing.fit_transform(X_train)
-X_val_processed = preprocessing.transform(X_val)
-X_test_processed = preprocessing.transform(X_test)
-
-# Initialize and train models
-models = pipeline.initialize_models()
-results = pipeline.train_and_evaluate_models(
-    X_train_processed, y_train,
-    X_val_processed, y_val,
-    X_test_processed, y_test
-)
-
-# Build ensemble
-ensemble = pipeline.build_ensemble()
-
-# Save models
-pipeline.save_model('models/')
+# Option 4: Train without WandB (quick local test)
+python main.py
 ```
 
-### Predict Existing Client Default Risk
+**Model Performance (Current):** AUC ~0.906
 
-```python
-# Example existing client data
-existing_client = {
-    'Client_ID': 'CLT_12345',
-    'Age': 35,
-    'Annual_Income': 60000,
-    'Loan_Amount': 15000,
-    'Outstanding_Balance': 12000,
-    'Credit_History_Months': 120,
-    'On_Time_Payment_Rate': 0.95,
-    'Late_Payments_Count': 1,
-    'Credit_Utilization_Rate': 0.45,
-    'Days_Past_Due': 0,
-    'Employment_Status': 1,  # Full-time
-    'Education_Level': 3     # Bachelor's
-}
+---
 
-# Get default risk prediction
-prediction = pipeline.predict_client_default(existing_client)
-risk_assessment = prediction['risk_assessment']
+### Predicting New Clients
 
-print(f"Default Probability: {risk_assessment['default_probability']:.2%}")
-print(f"Risk Classification: {risk_assessment['risk_classification']}")
-print(f"Portfolio Action: {risk_assessment['portfolio_action']}")
-print(f"Provision Required: ${risk_assessment['provision_amount']:,.2f}")
-print(f"Review Frequency: {risk_assessment['review_frequency']}")
+```bash
+cd Prediction
+
+# 1. Place new client data in Source/ folder
+# 2. Run prediction
+python predict.py --input Source/new_clients.xlsx --output Result/predictions.xlsx
+
+# Use conservative threshold (reject more, safer)
+python predict.py --input Source/new_clients.xlsx --output Result/predictions.xlsx --threshold 0.35
 ```
+
+**Output includes:**
+- `default_probability`: Default probability (0-1)
+- `risk_score`: Risk score (0-100, higher is better)
+- `risk_grade`: A (Excellent) to E (High Risk)
+- `decision`: APPROVE / REJECT
+
+---
+
+### Understanding Results
+
+**Key Metrics:**
+- **AUC-ROC (0.906):** Model's ability to distinguish default vs normal (Excellent ⭐⭐⭐⭐⭐)
+- **Precision (~68%):** Of predicted defaults, how many are real
+- **Recall (~75%):** Of real defaults, how many are caught
+- **F2-Score (~78%):** Balanced metric (emphasizes Recall)
+
+**Two Confusion Matrices:**
+1. **Default Threshold (0.5):** Balanced strategy
+2. **Optimal Threshold (~0.35):** Conservative strategy (higher Recall, catch more bad clients)
+
+**Risk Grades:**
+- A (80-100): Excellent - Approve with best rates
+- B (60-79): Good - Approve with standard rates
+- C (40-59): Fair - Cautious approval
+- D (20-39): Poor - Reject or require collateral
+- E (0-19): High Risk - Reject
 
 ## ⏰ Time-Aware Training (NEW)
 

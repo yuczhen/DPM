@@ -5,7 +5,7 @@
 # Project: DPM (Default Prediction Model)
 # =============================================
 
-program: main.py
+program: train_sweep.py
 method: bayes  # Options: grid, random, bayes
 project: DPM
 entity: yuczhen29-ccu
@@ -184,5 +184,4 @@ command:
   - ${env}
   - python
   - ${program}
-  - "--sweep"
   - ${args}

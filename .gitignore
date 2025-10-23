@@ -46,8 +46,11 @@ env/
 *.sqlite
 *.sqlite3
 
-# Weights & Biases
+# Weights & Biases (avoid leaking personal info)
 wandb/
+**/wandb/
+yuczhen29-ccu/
+**/yuczhen29-ccu/
 
 # Models
 models/

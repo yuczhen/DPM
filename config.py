@@ -82,46 +82,62 @@ EDUCATION_RISK_ADJUSTMENTS = {
 # Updated: 2025-10-22
 # Previous: M2+ optimized (scale_pos_weight=14.106)
 # Current: M1+ optimized (scale_pos_weight=3.82)
+# Default model hyperparameters
+# AUTO-UPDATED by WandB Sweep
+# Updated: 2025-10-22 17:48:35
+# Source: WandB run 'happy-sweep-1'
+# Best val_auc: 0.8972
+# Default model hyperparameters
+# AUTO-UPDATED by WandB Sweep
+# Updated: 2025-10-22 17:48:47
+# Source: WandB run 'fine-sweep-2'
+# Best val_auc: 0.9045
+# Default model hyperparameters
+# AUTO-UPDATED by WandB Sweep
+# Updated: 2025-10-22 17:52:26
+# Source: WandB run 'effortless-sweep-21'
+# Best val_auc: 0.9060
+# Default model hyperparameters
+# AUTO-UPDATED by WandB Sweep
+# Updated: 2025-10-22 17:54:05
+# Source: WandB run 'earnest-sweep-30'
+# Best val_auc: 0.9061
 MODEL_PARAMS = {
     'XGBoost': {
-        'n_estimators': 200,           # Optimized by sweep
-        'max_depth': 5,                # Optimized: balanced tree depth
-        'learning_rate': 0.024591,     # Optimized: fine-tuned learning rate
-        'subsample': 0.8852,           # Optimized: ~89% row sampling
-        'colsample_bytree': 0.7098,    # Optimized: ~71% feature sampling
-        'min_child_weight': 1,         # Optimized: lower regularization
-        'reg_alpha': 0.1,              # L1 regularization
-        'reg_lambda': 1.0,             # L2 regularization
-        'scale_pos_weight': 3.82,      # UPDATED: M1+ class imbalance (79.25/20.75)
-        'gamma': 0.1,                  # Minimum loss reduction
+        'colsample_bytree': 0.9027543096864294,
+        'gamma': 0.40797083064110584,
+        'learning_rate': 0.013981453819938056,
+        'max_depth': 4,
+        'min_child_weight': 7,
+        'n_estimators': 200,
+        'reg_alpha': 0.10363034034774932,
+        'reg_lambda': 0.03235691838853584,
+        'subsample': 0.6250003507025707,
         'random_state': 42,
-        'eval_metric': 'auc',          # Optimize for AUC
+        'eval_metric': 'auc',
         'verbosity': 0
     },
     'LightGBM': {
-        'n_estimators': 300,           # Optimized by sweep
-        'max_depth': 5,                # Optimized: balanced tree depth
-        'learning_rate': 0.0903,       # Optimized: fine-tuned learning rate
-        'subsample': 0.8,              # Bagging fraction
-        'colsample_bytree': 0.8,       # Feature fraction
-        'min_child_samples': 10,       # Allow smaller leaves
-        'reg_alpha': 0.1,              # L1 regularization
-        'reg_lambda': 1.0,             # L2 regularization
-        'num_leaves': 127,             # Optimized: higher complexity
-        'min_split_gain': 0.01,        # Minimum gain to split
-        'class_weight': 'balanced',    # UPDATED: Auto balance for M1+
-        'is_unbalance': True,          # Handle class imbalance
+        'colsample_bytree': 0.6562728325260756,
+        'learning_rate': 0.0365147451907443,
+        'max_depth': 7,
+        'min_child_samples': 20,
+        'n_estimators': 300,
+        'num_leaves': 63,
+        'reg_alpha': 0.002146016111807562,
+        'reg_lambda': 0.06533018870869167,
+        'subsample': 0.8421943199124751,
+        'is_unbalance': True,
         'random_state': 42,
         'verbosity': -1
     },
     'CatBoost': {
-        'iterations': 300,             # More iterations
-        'depth': 6,                    # Deeper trees
-        'learning_rate': 0.05,         # Lower LR
-        'l2_leaf_reg': 3,              # L2 regularization
-        'border_count': 128,           # More borders for numerical features
-        'auto_class_weights': 'Balanced',  # Auto balance classes
-        'min_data_in_leaf': 10,        # Allow smaller leaves
+        'border_count': 254,
+        'depth': 8,
+        'iterations': 100,
+        'l2_leaf_reg': 2.968008246901759,
+        'learning_rate': 0.02280150084073378,
+        'auto_class_weights': 'Balanced',
         'random_state': 42,
         'verbose': False
     }

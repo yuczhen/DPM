@@ -1,0 +1,37 @@
+{
+  "XGBoost": {
+    "colsample_bytree": 0.9027543096864294,
+    "gamma": 0.40797083064110584,
+    "learning_rate": 0.013981453819938056,
+    "max_depth": 4,
+    "min_child_weight": 7,
+    "n_estimators": 200,
+    "reg_alpha": 0.10363034034774932,
+    "reg_lambda": 0.03235691838853584,
+    "subsample": 0.6250003507025707
+  },
+  "LightGBM": {
+    "colsample_bytree": 0.6562728325260756,
+    "learning_rate": 0.0365147451907443,
+    "max_depth": 7,
+    "min_child_samples": 20,
+    "n_estimators": 300,
+    "num_leaves": 63,
+    "reg_alpha": 0.002146016111807562,
+    "reg_lambda": 0.06533018870869167,
+    "subsample": 0.8421943199124751
+  },
+  "CatBoost": {
+    "border_count": 254,
+    "depth": 8,
+    "iterations": 100,
+    "l2_leaf_reg": 2.968008246901759,
+    "learning_rate": 0.02280150084073378
+  },
+  "metadata": {
+    "run_name": "earnest-sweep-30",
+    "run_id": "ebnorxlk",
+    "val_auc": 0.906060445866281,
+    "updated_at": "2025-10-22T17:54:05.918279"
+  }
+}
