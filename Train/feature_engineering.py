@@ -256,6 +256,115 @@ class GeographicRiskEncoder:
         return self.transform(X, res_col, perm_col)
 
 
+class CustomerHistoryEncoder:
+    """
+    Customer Historical Behavior Feature Engineering (NEW - Tier 1 Critical)
+    從客戶歷史借貸記錄中提取行為特徵
+    """
+
+    def __init__(self):
+        self.history_map = {}
+        self.global_default_rate = None
+
+    def fit(self, df, id_col='ID', date_col='application date', target='Default'):
+        """
+        訓練歷史編碼器，學習每個客戶的歷史記錄
+        """
+        print("\n" + "=" * 70)
+        print("Customer Historical Behavior Feature Engineering")
+        print("=" * 70)
+
+        df_sorted = df.sort_values([id_col, date_col]).reset_index(drop=True)
+        self.global_default_rate = df[target].mean()
+
+        # 統計
+        total_customers = df[id_col].nunique()
+        repeat_customers = df[id_col].value_counts()[df[id_col].value_counts() > 1].count()
+
+        print(f"\nTotal customers: {total_customers}")
+        print(f"Repeat customers: {repeat_customers} ({repeat_customers/total_customers*100:.1f}%)")
+
+        # 為每個客戶的每筆貸款計算歷史特徵
+        for idx, row in df_sorted.iterrows():
+            customer_id = row[id_col]
+
+            # 獲取該客戶在此筆貸款之前的所有記錄
+            prev_records = df_sorted[
+                (df_sorted[id_col] == customer_id) &
+                (df_sorted.index < idx)
+            ]
+
+            if len(prev_records) == 0:
+                # 新客戶
+                history = {
+                    'is_new_customer': 1,
+                    'historical_default': 0,
+                    'prev_overdue_days': 0,
+                    'prev_payment_ratio': 0,
+                    'cumulative_loans': 0,
+                    'cumulative_defaults': 0,
+                    'customer_default_rate': 0,
+                }
+            else:
+                # 舊客戶
+                last_loan = prev_records.iloc[-1]
+
+                history = {
+                    'is_new_customer': 0,
+                    'historical_default': int(prev_records[target].sum() > 0),  # 曾經違約過
+                    'prev_overdue_days': float(last_loan.get('overdue days', 0)),
+                    'prev_payment_ratio': float(last_loan.get('paid installments', 0)) / float(last_loan.get('loan term', 1)) if last_loan.get('loan term', 1) > 0 else 0,
+                    'cumulative_loans': len(prev_records),
+                    'cumulative_defaults': int(prev_records[target].sum()),
+                    'customer_default_rate': float(prev_records[target].mean()),
+                }
+
+            self.history_map[idx] = history
+
+        # 統計歷史違約影響
+        new_defaults = df_sorted[df_sorted.apply(lambda r: self.history_map.get(r.name, {}).get('is_new_customer', 1) == 1, axis=1)][target].mean()
+        old_no_default = df_sorted[df_sorted.apply(lambda r: self.history_map.get(r.name, {}).get('historical_default', 0) == 0 and self.history_map.get(r.name, {}).get('is_new_customer', 0) == 0, axis=1)][target].mean() if len(df_sorted[df_sorted.apply(lambda r: self.history_map.get(r.name, {}).get('historical_default', 0) == 0 and self.history_map.get(r.name, {}).get('is_new_customer', 0) == 0, axis=1)]) > 0 else 0
+        old_with_default = df_sorted[df_sorted.apply(lambda r: self.history_map.get(r.name, {}).get('historical_default', 0) == 1, axis=1)][target].mean() if len(df_sorted[df_sorted.apply(lambda r: self.history_map.get(r.name, {}).get('historical_default', 0) == 1, axis=1)]) > 0 else 0
+
+        print(f"\nDefault Rate by Customer Type:")
+        print(f"  New customers: {new_defaults*100:.2f}%")
+        print(f"  Repeat (no prev default): {old_no_default*100:.2f}%")
+        print(f"  Repeat (with prev default): {old_with_default*100:.2f}% [HIGH RISK!]")
+
+        print(f"\n[OK] Customer history features created")
+
+    def transform(self, df, id_col='ID', date_col='application date'):
+        """
+        轉換為歷史特徵
+        """
+        df_enhanced = df.copy()
+
+        # 如果是新數據（沒有在 fit 時見過），使用新客戶的預設值
+        for idx in df_enhanced.index:
+            if idx in self.history_map:
+                history = self.history_map[idx]
+            else:
+                # 預測階段的新客戶
+                history = {
+                    'is_new_customer': 1,
+                    'historical_default': 0,
+                    'prev_overdue_days': 0,
+                    'prev_payment_ratio': 0,
+                    'cumulative_loans': 0,
+                    'cumulative_defaults': 0,
+                    'customer_default_rate': 0,
+                }
+
+            for key, value in history.items():
+                df_enhanced.at[idx, key] = value
+
+        return df_enhanced
+
+    def fit_transform(self, df, id_col='ID', date_col='application date', target='Default'):
+        self.fit(df, id_col, date_col, target)
+        return self.transform(df, id_col, date_col)
+
+
 class OverduePatternEncoder:
     """
     Overdue Pattern Feature Engineering (Tier 1 Improvement)
@@ -358,7 +467,82 @@ class OverduePatternEncoder:
         print("  + total_overdue_count (sum of all overdue)")
         print("  + has_overdue (binary flag)")
 
-        print(f"\n✓ Created {len([c for c in df_enhanced.columns if c not in df.columns])} new overdue pattern features")
+        # === Tier 2 Features: Advanced Time Series ===
+        print("\n  [Tier 2] Advanced Time Series Features:")
+
+        # Feature 9: Overdue Acceleration (二階導數)
+        def calc_acceleration(row):
+            """Calculate rate of change in overdue behavior"""
+            sequence = [float(row[col]) for col in existing_overdue_cols]
+            if len(sequence) < 3:
+                return 0
+            # Calculate first derivative (velocity)
+            velocities = [sequence[i+1] - sequence[i] for i in range(len(sequence)-1)]
+            # Calculate second derivative (acceleration)
+            accelerations = [velocities[i+1] - velocities[i] for i in range(len(velocities)-1)]
+            return np.mean(accelerations) if len(accelerations) > 0 else 0
+
+        df_enhanced['overdue_acceleration'] = df.apply(calc_acceleration, axis=1)
+        print("  + overdue_acceleration (rate of change)")
+
+        # Feature 10: Critical Period Overdue (M2-M4，根據分析這是關鍵期)
+        critical_cols = [col for col in existing_overdue_cols if 'second half of the first month' in col or 'second month' in col or 'third month' in col or 'fourth month' in col]
+        if len(critical_cols) >= 2:
+            df_enhanced['critical_period_overdue'] = df[critical_cols].sum(axis=1)
+            # Removed: critical_period_severity (redundant - just critical_period_overdue/3)
+            print("  + critical_period_overdue (M2-M4 sum)")
+            print("  [Removed] critical_period_severity (redundant)")
+
+        # Feature 11: Late Stage Persistence (M4-M7)
+        if len(late_cols) >= 2:
+            df_enhanced['late_stage_persistence'] = (df[late_cols] > 0).sum(axis=1)
+            df_enhanced['late_stage_persistent_flag'] = (df_enhanced['late_stage_persistence'] >= 2).astype(int)
+            print("  + late_stage_persistence (# of months with overdue in M4-M7)")
+            print("  + late_stage_persistent_flag (1=persistent problem)")
+
+        # Feature 12: Overdue Recovery Rate
+        if 'early_overdue_count' in df_enhanced.columns and 'late_overdue_count' in df_enhanced.columns:
+            # Positive recovery = early overdue > late overdue (improving)
+            df_enhanced['overdue_recovery'] = df_enhanced['early_overdue_count'] - df_enhanced['late_overdue_count']
+            df_enhanced['overdue_improving'] = (df_enhanced['overdue_recovery'] > 0).astype(int)
+            print("  + overdue_recovery (improvement score)")
+            print("  + overdue_improving (1=getting better)")
+
+        # Feature 13: Early Warning Score (M0-M2)
+        early_warning_cols = [col for col in existing_overdue_cols if 'before' in col or 'first half of the first month' in col or 'second half of the first month' in col]
+        if len(early_warning_cols) >= 2:
+            df_enhanced['early_warning_score'] = df[early_warning_cols].sum(axis=1)
+            df_enhanced['early_warning_flag'] = (df_enhanced['early_warning_score'] >= 3).astype(int)
+            print("  + early_warning_score (M0-M2 sum)")
+            print("  + early_warning_flag (1=early warning)")
+
+        # Feature 14: Rolling 3-month Average
+        def calc_rolling_avg(row, window=3):
+            """Calculate rolling average of overdue"""
+            sequence = [float(row[col]) for col in existing_overdue_cols]
+            if len(sequence) < window:
+                return sequence[-1] if sequence else 0
+            # Rolling average for last window months
+            return np.mean(sequence[-window:])
+
+        df_enhanced['rolling_3m_overdue_avg'] = df.apply(lambda r: calc_rolling_avg(r, 3), axis=1)
+        print("  + rolling_3m_overdue_avg (rolling 3-month avg)")
+
+        # Feature 15: Exponential Weighted Moving Average (給近期更高權重)
+        def calc_ema(row, alpha=0.3):
+            """Calculate EMA with more weight on recent months"""
+            sequence = [float(row[col]) for col in existing_overdue_cols]
+            if not sequence:
+                return 0
+            ema = sequence[0]
+            for val in sequence[1:]:
+                ema = alpha * val + (1 - alpha) * ema
+            return ema
+
+        df_enhanced['ema_overdue'] = df.apply(lambda r: calc_ema(r, 0.3), axis=1)
+        print("  + ema_overdue (exponential moving average)")
+
+        print(f"\n[OK] Created {len([c for c in df_enhanced.columns if c not in df.columns])} new overdue pattern features (Tier 1 + Tier 2)")
 
         return df_enhanced
 
@@ -390,6 +574,15 @@ def get_feature_lists():
         'dti_ratio',
         'payment_pressure',
 
+        # 客戶歷史行為 (NEW - Tier 1 Critical)
+        'is_new_customer',
+        'historical_default',
+        'prev_overdue_days',
+        'prev_payment_ratio',
+        'cumulative_loans',
+        'cumulative_defaults',
+        'customer_default_rate',
+
         # 逾期行為 - Basic
         'total_overdue_count',
         'has_overdue',
@@ -397,7 +590,6 @@ def get_feature_lists():
 
         # 逾期行為 - Tier 1 Enhanced Patterns
         'late_overdue_count',
-        'overdue_trend',
         'overdue_worsening',
         'max_overdue_in_month',
         'overdue_std',
@@ -406,6 +598,17 @@ def get_feature_lists():
         'overdue_freq_ratio',
         'recent_overdue_severity',
         'max_consecutive_overdue',
+
+        # 逾期行為 - Tier 2 Advanced Time Series
+        'overdue_acceleration',
+        'critical_period_overdue',
+        'late_stage_persistence',
+        'late_stage_persistent_flag',
+        'overdue_recovery',
+        'overdue_improving',
+        'early_warning_score',
+        'early_warning_flag',
+        'ema_overdue',
 
         # 原始特徵
         'loan term',
@@ -432,4 +635,5 @@ if __name__ == "__main__":
     print("  - WoEEncoder")
     print("  - TargetEncoder")
     print("  - GeographicRiskEncoder")
-    print("  - OverduePatternEncoder (NEW - Tier 1 Improvement)")
+    print("  - CustomerHistoryEncoder (NEW - Tier 1 Critical)")
+    print("  - OverduePatternEncoder (Enhanced with Tier 1 + Tier 2)")

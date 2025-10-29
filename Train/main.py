@@ -532,7 +532,8 @@ def train_with_real_data():
             'accuracy': accuracy,
             'precision': precision,
             'recall': recall,
-            'f1': f1
+            'f1': f1,
+            'probabilities': y_pred_proba  # 保存機率用於計算最佳閾值
         }
 
     # 12. Best model
@@ -590,7 +591,8 @@ def train_with_real_data():
         'accuracy': stack_accuracy,
         'precision': stack_precision,
         'recall': stack_recall,
-        'f1': stack_f1
+        'f1': stack_f1,
+        'probabilities': stack_pred_proba  # 保存機率用於計算最佳閾值
     }
 
     # Update best model if stacking is better
@@ -615,19 +617,134 @@ def train_with_real_data():
         joblib.dump(models[best_model_name], f'models/best_model_{best_model_name}.pkl')
         print(f"[OK] Best model ({best_model_name}) saved to: models/best_model_{best_model_name}.pkl")
 
-    # 16. Save WoE encoder
+    # 16. Find optimal thresholds (F2-optimized for better Recall)
+    print("\n" + "=" * 80)
+    print("Finding Optimal Thresholds (F2-Score Optimization)")
+    print("=" * 80)
+
+    def find_optimal_threshold(y_true, y_pred_proba, metric='f2', beta=2):
+        """
+        Find optimal classification threshold
+
+        Args:
+            y_true: True labels
+            y_pred_proba: Predicted probabilities
+            metric: 'f1', 'f2' (recall-focused), or 'balanced'
+            beta: For F-beta score (beta=2 weights recall 2x higher than precision)
+        """
+        from sklearn.metrics import fbeta_score
+
+        thresholds = np.arange(0.1, 0.9, 0.01)
+        scores = []
+
+        for thresh in thresholds:
+            y_pred_thresh = (y_pred_proba >= thresh).astype(int)
+
+            if metric == 'f1':
+                score = f1_score(y_true, y_pred_thresh)
+            elif metric == 'f2':
+                score = fbeta_score(y_true, y_pred_thresh, beta=beta)
+            elif metric == 'balanced':
+                prec = precision_score(y_true, y_pred_thresh)
+                rec = recall_score(y_true, y_pred_thresh)
+                score = (prec + rec) / 2
+
+            scores.append(score)
+
+        optimal_idx = np.argmax(scores)
+        optimal_threshold = thresholds[optimal_idx]
+        optimal_score = scores[optimal_idx]
+
+        return optimal_threshold, optimal_score
+
+    # Calculate optimal thresholds for all models
+    optimal_thresholds = {}
+
+    for model_name, model_result in results.items():
+        y_pred_proba = model_result['probabilities']
+
+        # F2 score (weights recall 2x more than precision)
+        optimal_thresh, optimal_f2 = find_optimal_threshold(y_test, y_pred_proba, metric='f2', beta=2)
+
+        # Evaluate at optimal threshold
+        y_pred_optimal = (y_pred_proba >= optimal_thresh).astype(int)
+
+        optimal_accuracy = accuracy_score(y_test, y_pred_optimal)
+        optimal_precision = precision_score(y_test, y_pred_optimal)
+        optimal_recall = recall_score(y_test, y_pred_optimal)
+        optimal_f1 = f1_score(y_test, y_pred_optimal)
+
+        optimal_thresholds[model_name] = {
+            'threshold': optimal_thresh,
+            'f2_score': optimal_f2,
+            'accuracy': optimal_accuracy,
+            'precision': optimal_precision,
+            'recall': optimal_recall,
+            'f1': optimal_f1
+        }
+
+        print(f"\n{model_name}:")
+        print(f"  Optimal Threshold: {optimal_thresh:.3f} (default: 0.500)")
+        print(f"  At optimal threshold:")
+        print(f"    Recall: {optimal_recall:.4f} (was {model_result['recall']:.4f}) {'↑' if optimal_recall > model_result['recall'] else '↓'}")
+        print(f"    Precision: {optimal_precision:.4f} (was {model_result['precision']:.4f})")
+        print(f"    F1: {optimal_f1:.4f} (was {model_result['f1']:.4f})")
+        print(f"    F2: {optimal_f2:.4f}")
+
+    # 17. Save optimal thresholds to JSON
+    print("\n" + "=" * 80)
+    print("Saving Optimal Thresholds Configuration")
+    print("=" * 80)
+
+    threshold_config = {
+        'trained_date': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+        'optimal_thresholds': {}
+    }
+
+    # Save each model's optimal threshold and metrics
+    for model_name, threshold_info in optimal_thresholds.items():
+        threshold_config['optimal_thresholds'][model_name] = {
+            'threshold': float(threshold_info['threshold']),
+            'recall': float(threshold_info['recall']),
+            'precision': float(threshold_info['precision']),
+            'f1': float(threshold_info['f1']),
+            'f2_score': float(threshold_info['f2_score'])
+        }
+
+    # Save recommended threshold (Stacking model if available)
+    if 'Stacking' in optimal_thresholds:
+        threshold_config['recommended_threshold'] = float(optimal_thresholds['Stacking']['threshold'])
+        threshold_config['recommended_model'] = 'Stacking'
+    else:
+        # Use best model's threshold
+        threshold_config['recommended_threshold'] = float(optimal_thresholds[best_model_name]['threshold'])
+        threshold_config['recommended_model'] = best_model_name
+
+    threshold_path = 'models/optimal_thresholds.json'
+    with open(threshold_path, 'w', encoding='utf-8') as f:
+        json.dump(threshold_config, f, indent=2, ensure_ascii=False)
+
+    print(f"[OK] Optimal thresholds saved: {threshold_path}")
+    print(f"     Recommended threshold: {threshold_config['recommended_threshold']:.3f} ({threshold_config['recommended_model']} model)")
+    if threshold_config['recommended_model'] in optimal_thresholds:
+        print(f"     Expected Recall: {optimal_thresholds[threshold_config['recommended_model']]['recall']:.2%}")
+        print(f"     Expected Precision: {optimal_thresholds[threshold_config['recommended_model']]['precision']:.2%}")
+
+    # 18. Save WoE encoder
     joblib.dump(woe_encoder, 'models/woe_encoder.pkl')
-    print(f"[OK] WoE encoder saved to: models/woe_encoder.pkl")
+    print(f"\n[OK] WoE encoder saved to: models/woe_encoder.pkl")
 
     print("\n" + "=" * 80)
     print("Training Completed!")
     print("=" * 80)
     print(f"\nBest Model: {best_model_name}")
     print(f"Best AUC: {best_auc:.4f}")
+    print(f"Optimal Threshold: {threshold_config['recommended_threshold']:.3f}")
     print(f"\nResults saved to:")
     print(f"  - Result/model_results.csv")
     print(f"  - models/best_model_*.pkl")
     print(f"  - models/woe_encoder.pkl")
+    print(f"  - models/optimal_thresholds.json")
 
     return pipeline, results, woe_encoder
 

@@ -5,7 +5,15 @@
       "Bash(cat:*)",
       "Bash(git add:*)",
       "Bash(git rm:*)",
-      "Bash(git commit:*)"
+      "Bash(git commit:*)",
+      "Bash(git push:*)",
+      "Bash(kaggle datasets download:*)",
+      "Bash(pip install:*)",
+      "Bash(awk:*)",
+      "Bash(xargs:*)",
+      "Bash(dir:*)",
+      "Bash(del test_auto_threshold.py test_missing_json.py)",
+      "Bash(del test_output.csv test_output_README.txt)"
     ],
     "deny": [],
     "ask": []

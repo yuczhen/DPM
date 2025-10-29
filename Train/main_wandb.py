@@ -42,6 +42,18 @@ import lightgbm as lgb
 from catboost import CatBoostClassifier
 from sklearn.ensemble import VotingClassifier
 
+# Deep Learning (TensorFlow/Keras for LSTM)
+try:
+    import tensorflow as tf
+    from tensorflow import keras
+    from keras import layers
+    from keras.callbacks import EarlyStopping, ReduceLROnPlateau
+    from sklearn.base import BaseEstimator, ClassifierMixin
+    TF_AVAILABLE = True
+except ImportError:
+    print("[WARNING] TensorFlow not available, LSTM model will be skipped")
+    TF_AVAILABLE = False
+
 # SHAP解釋性
 import shap
 
@@ -63,6 +75,8 @@ import config
 
 # Import feature engineering from dedicated module
 from feature_engineering import (
+    WoEEncoder,
+    CustomerHistoryEncoder,
     OverduePatternEncoder,
     GeographicRiskEncoder
 )
@@ -87,97 +101,6 @@ except ImportError:
 # 設定matplotlib中文顯示
 plt.rcParams['font.sans-serif'] = ['SimHei', 'Microsoft YaHei', 'Arial Unicode MS']
 plt.rcParams['axes.unicode_minus'] = False
-
-
-class WoEEncoder:
-    """
-    Weight of Evidence (WoE) 編碼器
-    用於將分類變數轉換為 WoE 值
-    """
-
-    def __init__(self):
-        self.woe_dict = {}
-        self.iv_dict = {}
-
-    def calculate_woe_iv(self, df, feature, target='Default'):
-        """計算 WoE 和 IV 值"""
-        grouped = df.groupby(feature)[target].agg(['sum', 'count'])
-        grouped.columns = ['bad', 'total']
-        grouped['good'] = grouped['total'] - grouped['bad']
-
-        total_good = grouped['good'].sum()
-        total_bad = grouped['bad'].sum()
-
-        if total_good == 0 or total_bad == 0:
-            print(f"[WARNING] {feature}: 沒有足夠的好壞樣本，跳過")
-            return None
-
-        grouped['good_pct'] = grouped['good'] / total_good
-        grouped['bad_pct'] = grouped['bad'] / total_bad
-        grouped['good_pct'] = grouped['good_pct'].replace(0, 0.0001)
-        grouped['bad_pct'] = grouped['bad_pct'].replace(0, 0.0001)
-
-        grouped['WoE'] = np.log(grouped['good_pct'] / grouped['bad_pct'])
-        grouped['IV'] = (grouped['good_pct'] - grouped['bad_pct']) * grouped['WoE']
-
-        return grouped.reset_index()
-
-    def fit(self, X, y, categorical_features):
-        """訓練 WoE 編碼器"""
-        df = X.copy()
-        df['Default'] = y
-
-        print("=" * 70)
-        print("WoE Encoding")
-        print("=" * 70)
-
-        for feature in categorical_features:
-            if feature not in df.columns:
-                print(f"[WARNING] {feature} not found, skip")
-                continue
-
-            woe_df = self.calculate_woe_iv(df, feature, 'Default')
-
-            if woe_df is not None:
-                self.woe_dict[feature] = dict(zip(woe_df[feature], woe_df['WoE']))
-                total_iv = woe_df['IV'].sum()
-                self.iv_dict[feature] = total_iv
-
-                strength = ("Strong" if total_iv > 0.3 else
-                          "Medium" if total_iv > 0.1 else
-                          "Weak" if total_iv > 0.02 else "Very Weak")
-                print(f"\n{feature}:")
-                print(f"  IV = {total_iv:.4f} ({strength})")
-
-        # 排序
-        print("\n" + "=" * 70)
-        print("Feature Importance (by IV)")
-        print("=" * 70)
-        sorted_iv = sorted(self.iv_dict.items(), key=lambda x: x[1], reverse=True)
-        for feature, iv in sorted_iv:
-            print(f"{feature:40s} | IV = {iv:.4f}")
-
-    def transform(self, X, categorical_features):
-        """轉換為 WoE 值"""
-        X_woe = X.copy()
-
-        for feature in categorical_features:
-            if feature not in self.woe_dict:
-                continue
-
-            woe_map = self.woe_dict[feature]
-            X_woe[f'{feature}_WoE'] = X[feature].map(woe_map).fillna(0)
-
-        return X_woe
-
-    def fit_transform(self, X, y, categorical_features):
-        """訓練並轉換"""
-        self.fit(X, y, categorical_features)
-        return self.transform(X, categorical_features)
-
-    def get_important_features(self, iv_threshold=0.02):
-        """根據 IV 值篩選重要特徵"""
-        return [f for f, iv in self.iv_dict.items() if iv >= iv_threshold]
 
 
 class TargetEncoder:
@@ -229,107 +152,131 @@ class TargetEncoder:
         return self.transform(X, categorical_features)
 
 
-class GeographicRiskEncoder:
+
+class LSTMTimeSeriesClassifier(BaseEstimator, ClassifierMixin):
     """
-    Geographic Risk Feature Engineering
-    計算地理位置的違約風險特徵
+    LSTM Time Series Classifier Wrapper for Sklearn Compatibility
+    專門用於逾期時間序列的 LSTM 模型
     """
-    def __init__(self, min_samples=10):
-        self.min_samples = min_samples
-        self.res_risk_map = {}
-        self.perm_risk_map = {}
-        self.city_risk_map = {}
-        self.global_default_rate = None
+    def __init__(self, lstm_units=64, dropout_rate=0.3, learning_rate=0.001,
+                 epochs=50, batch_size=32, random_state=42):
+        self.lstm_units = lstm_units
+        self.dropout_rate = dropout_rate
+        self.learning_rate = learning_rate
+        self.epochs = epochs
+        self.batch_size = batch_size
+        self.random_state = random_state
+        self.model = None
+        self.scaler = StandardScaler()
+        self.overdue_cols = [
+            'number of overdue before the first month',
+            'number of overdue in the first half of the first month',
+            'number of overdue in the second half of the first month',
+            'number of overdue in the second month',
+            'number of overdue in the third month',
+            'number of overdue in the fourth month',
+            'number of overdue in the fifth month',
+            'number of overdue in the sixth month',
+        ]
 
-    def fit(self, X, y, res_col='post code of residential address',
-            perm_col='post code of permanent address'):
-        """訓練地理風險編碼器"""
-        df = X.copy()
-        df['Default'] = y
-        self.global_default_rate = y.mean()
+    def _extract_time_series(self, X):
+        """從特徵中提取逾期時間序列"""
+        X_df = pd.DataFrame(X) if not isinstance(X, pd.DataFrame) else X
 
-        print("\n" + "=" * 70)
-        print("Geographic Risk Feature Engineering")
-        print("=" * 70)
+        # 找到逾期相關欄位
+        ts_cols = [col for col in self.overdue_cols if col in X_df.columns]
 
-        # Residential postal code risk
-        if res_col in df.columns:
-            res_risk = df.groupby(res_col)['Default'].agg(['mean', 'count'])
-            res_risk.columns = ['default_rate', 'sample_count']
+        if len(ts_cols) == 0:
+            # 如果沒有原始逾期欄位，使用所有數值特徵
+            ts_data = X_df.select_dtypes(include=[np.number]).values
+        else:
+            ts_data = X_df[ts_cols].values
 
-            # Only trust postal codes with enough samples
-            res_risk['risk_score'] = res_risk['default_rate']
-            res_risk.loc[res_risk['sample_count'] < self.min_samples, 'risk_score'] = self.global_default_rate
+        # Reshape for LSTM: (samples, timesteps, features)
+        n_samples = ts_data.shape[0]
+        n_features = ts_data.shape[1]
 
-            self.res_risk_map = res_risk['risk_score'].to_dict()
+        # 如果特徵數太少，填充
+        if n_features < 8:
+            padding = np.zeros((n_samples, 8 - n_features))
+            ts_data = np.hstack([ts_data, padding])
+            n_features = 8
 
-            print(f"\nResidential postal codes: {len(res_risk)} unique")
-            print(f"  Risk range: {res_risk['risk_score'].min():.4f} ~ {res_risk['risk_score'].max():.4f}")
+        return ts_data.reshape(n_samples, n_features, 1)
 
-            # Top risk areas
-            top_risk = res_risk.nlargest(5, 'risk_score')
-            print(f"\n  Top 5 highest risk areas:")
-            for idx, (postal, row) in enumerate(top_risk.iterrows(), 1):
-                print(f"    {idx}. {postal}: {row['risk_score']:.2%} (n={row['sample_count']:.0f})")
+    def _build_model(self, input_shape):
+        """建立 LSTM 模型"""
+        if not TF_AVAILABLE:
+            raise ImportError("TensorFlow is required for LSTM model")
 
-        # Permanent postal code risk
-        if perm_col in df.columns:
-            perm_risk = df.groupby(perm_col)['Default'].agg(['mean', 'count'])
-            perm_risk['risk_score'] = perm_risk['mean']
-            perm_risk.loc[perm_risk['count'] < self.min_samples, 'risk_score'] = self.global_default_rate
+        tf.random.set_seed(self.random_state)
 
-            self.perm_risk_map = perm_risk['risk_score'].to_dict()
+        model = keras.Sequential([
+            layers.LSTM(self.lstm_units, return_sequences=True, input_shape=input_shape),
+            layers.Dropout(self.dropout_rate),
+            layers.LSTM(self.lstm_units // 2),
+            layers.Dropout(self.dropout_rate),
+            layers.Dense(32, activation='relu'),
+            layers.Dropout(self.dropout_rate / 2),
+            layers.Dense(1, activation='sigmoid')
+        ])
 
-            print(f"\nPermanent postal codes: {len(perm_risk)} unique")
+        model.compile(
+            optimizer=keras.optimizers.Adam(learning_rate=self.learning_rate),
+            loss='binary_crossentropy',
+            metrics=['AUC', 'accuracy']
+        )
 
-        # City level risk (extract first 3 digits)
-        if res_col in df.columns:
-            df['city'] = df[res_col].astype(str).str[:3]
-            city_risk = df.groupby('city')['Default'].agg(['mean', 'count'])
-            city_risk['risk_score'] = city_risk['mean']
-            city_risk.loc[city_risk['count'] < self.min_samples * 5, 'risk_score'] = self.global_default_rate
+        return model
 
-            self.city_risk_map = city_risk['risk_score'].to_dict()
+    def fit(self, X, y):
+        """訓練 LSTM 模型"""
+        # Extract time series
+        X_ts = self._extract_time_series(X)
 
-            print(f"\nCities: {len(city_risk)} unique")
+        # Normalize
+        X_ts_flat = X_ts.reshape(X_ts.shape[0], -1)
+        X_ts_scaled = self.scaler.fit_transform(X_ts_flat)
+        X_ts = X_ts_scaled.reshape(X_ts.shape[0], X_ts.shape[1], 1)
 
-    def transform(self, X, res_col='post code of residential address',
-                  perm_col='post code of permanent address'):
-        """轉換為地理風險特徵"""
-        X_geo = X.copy()
+        # Build model
+        input_shape = (X_ts.shape[1], X_ts.shape[2])
+        self.model = self._build_model(input_shape)
 
-        # Residential risk score
-        if res_col in X.columns and self.res_risk_map:
-            X_geo['res_risk_score'] = X[res_col].map(self.res_risk_map).fillna(self.global_default_rate)
+        # Callbacks
+        early_stop = EarlyStopping(monitor='loss', patience=10, restore_best_weights=True, verbose=0)
+        reduce_lr = ReduceLROnPlateau(monitor='loss', factor=0.5, patience=5, min_lr=0.00001, verbose=0)
 
-            # Risk level categorization
-            X_geo['res_risk_level'] = pd.cut(
-                X_geo['res_risk_score'],
-                bins=[0, 0.03, 0.06, 0.10, 1.0],
-                labels=['low', 'medium', 'high', 'very_high']
-            )
+        # Train
+        self.model.fit(
+            X_ts, y,
+            epochs=self.epochs,
+            batch_size=self.batch_size,
+            callbacks=[early_stop, reduce_lr],
+            verbose=0,
+            validation_split=0.1
+        )
 
-        # Permanent risk score
-        if perm_col in X.columns and self.perm_risk_map:
-            X_geo['perm_risk_score'] = X[perm_col].map(self.perm_risk_map).fillna(self.global_default_rate)
+        return self
 
-        # City risk score
-        if res_col in X.columns and self.city_risk_map:
-            X_geo['city'] = X[res_col].astype(str).str[:3]
-            X_geo['city_risk_score'] = X_geo['city'].map(self.city_risk_map).fillna(self.global_default_rate)
+    def predict_proba(self, X):
+        """預測機率"""
+        if self.model is None:
+            raise ValueError("Model not trained yet. Call fit() first.")
 
-        # Address stability risk (combined feature)
-        if 'address_match' in X.columns and 'res_risk_score' in X_geo.columns:
-            X_geo['address_stability_risk'] = (
-                (1 - X['address_match']) * 0.3 + X_geo['res_risk_score'] * 0.7
-            )
+        X_ts = self._extract_time_series(X)
+        X_ts_flat = X_ts.reshape(X_ts.shape[0], -1)
+        X_ts_scaled = self.scaler.transform(X_ts_flat)
+        X_ts = X_ts_scaled.reshape(X_ts.shape[0], X_ts.shape[1], 1)
 
-        return X_geo
+        y_pred = self.model.predict(X_ts, verbose=0).flatten()
 
-    def fit_transform(self, X, y, res_col='post code of residential address',
-                     perm_col='post code of permanent address'):
-        self.fit(X, y, res_col, perm_col)
-        return self.transform(X, res_col, perm_col)
+        # Return probabilities for both classes
+        return np.column_stack([1 - y_pred, y_pred])
+
+    def predict(self, X):
+        """預測類別"""
+        return (self.predict_proba(X)[:, 1] >= 0.5).astype(int)
 
 
 class AdvancedDefaultPredictionPipeline:
@@ -345,7 +292,13 @@ class AdvancedDefaultPredictionPipeline:
         self.wandb_project = wandb_project
         self.wandb_run = None
 
-        self.models = {}
+        # === 模型與狀態 ===
+        self.models = {}                 # 各模型實例池：{"LGBM": estimator, "XGB": estimator, ...}
+        self.best_model_name = None      # ★ 新增：最佳模型名稱（字串）
+        self.best_model = None           # 最佳模型實例
+        self.ensemble_model = None
+        
+        # === 資料處理 ===
         self.feature_engineered_data = None
         self.feature_names = None
         self.target_col = 'Default'
@@ -643,8 +596,16 @@ class AdvancedDefaultPredictionPipeline:
         df_fe['has_overdue'] = (df_fe['early_overdue_count'] > 0).astype(int)
         print("  + has_overdue (binary flag)")
 
-        # === Tier 1: Overdue Pattern Features (ENHANCED!) ===
-        print("\n[5/5] Tier 1: Enhanced Overdue Pattern Analysis")
+        # === NEW: Customer History Features (CRITICAL!) ===
+        print("\n[5/6] Customer Historical Behavior Analysis (NEW - Tier 1 Critical)")
+        if 'ID' in df_fe.columns and 'application date' in df_fe.columns and 'Default' in df_fe.columns:
+            history_encoder = CustomerHistoryEncoder()
+            df_fe = history_encoder.fit_transform(df_fe, id_col='ID', date_col='application date', target='Default')
+        else:
+            print("  [WARNING] Missing required columns for customer history features, skipping")
+
+        # === Tier 1 + Tier 2: Overdue Pattern Features (ENHANCED!) ===
+        print("\n[6/6] Tier 1 + Tier 2: Enhanced Overdue Pattern Analysis")
         overdue_encoder = OverduePatternEncoder()
         df_fe = overdue_encoder.create_overdue_pattern_features(df_fe)
 
@@ -917,6 +878,20 @@ class AdvancedDefaultPredictionPipeline:
             'LightGBM': lgb.LGBMClassifier(**model_params['LightGBM']),
             'CatBoost': CatBoostClassifier(**model_params['CatBoost'])
         }
+
+        # Add LSTM if TensorFlow is available
+        if TF_AVAILABLE:
+            print("\n[INFO] Adding LSTM Time Series Model to ensemble")
+            self.models['LSTM'] = LSTMTimeSeriesClassifier(
+                lstm_units=64,
+                dropout_rate=0.3,
+                learning_rate=0.001,
+                epochs=50,
+                batch_size=32,
+                random_state=self.random_state
+            )
+        else:
+            print("\n[WARNING] TensorFlow not available, skipping LSTM model")
 
         return self.models
     
@@ -1608,15 +1583,225 @@ def train_with_real_data(use_best_params=False, best_params_path='Train/best_par
         shap_df.to_csv('Result/SHAP_Feature_Importance.csv')
         print(f"\n[OK] SHAP report saved to Result/SHAP_Feature_Importance.csv")
 
+        # === Create SHAP Visualizations ===
+        print("\n[Creating SHAP Visualizations for WandB]")
+
+        # Categorize features for better visualization
+        def categorize_feature(feat_name):
+            feat_lower = feat_name.lower()
+            if any(x in feat_lower for x in ['critical_period', 'acceleration', 'late_stage', 'early_warning', 'rolling', 'ema', 'recovery', 'improving']):
+                return 'Tier 2: Advanced Time Series'
+            elif any(x in feat_lower for x in ['overdue_trend', 'overdue_worsening', 'max_consecutive', 'overdue_frequency', 'overdue_std', 'late_overdue', 'early_overdue', 'total_overdue', 'has_overdue', 'recent_overdue']):
+                return 'Tier 1: Overdue Patterns'
+            elif any(x in feat_lower for x in ['historical', 'prev_', 'cumulative', 'is_new_customer', 'customer_default']):
+                return 'Customer History'
+            elif 'woe' in feat_lower:
+                return 'WoE Encoded (Categorical)'
+            elif any(x in feat_lower for x in ['dti', 'payment_pressure', 'salary', 'job']):
+                return 'Financial Capability'
+            else:
+                return 'Other Features'
+
+        shap_df['Category'] = shap_df.index.map(categorize_feature)
+
+        # Visualization 1: Top 20 Features Bar Chart
+        print("  [1/5] Creating Top 20 Features Bar Chart...")
+        fig, ax = plt.subplots(figsize=(12, 8))
+        top_20 = shap_df.nlargest(20, 'Mean_SHAP')
+        colors = ['#1f77b4' if 'tier' not in idx.lower() and 'critical' not in idx.lower()
+                  and 'acceleration' not in idx.lower() and 'late_stage' not in idx.lower()
+                  and 'early_warning' not in idx.lower() and 'rolling' not in idx.lower()
+                  and 'ema' not in idx.lower()
+                  else '#ff7f0e' for idx in top_20.index]
+
+        ax.barh(range(len(top_20)), top_20['Mean_SHAP'], color=colors)
+        ax.set_yticks(range(len(top_20)))
+        ax.set_yticklabels(top_20.index, fontsize=10)
+        ax.set_xlabel('Mean |SHAP Value|', fontsize=12, fontweight='bold')
+        ax.set_title('Top 20 Features by SHAP Importance', fontsize=14, fontweight='bold', pad=20)
+        ax.grid(axis='x', alpha=0.3)
+
+        for i, v in enumerate(top_20['Mean_SHAP']):
+            ax.text(v, i, f' {v:.3f}', va='center', fontsize=9)
+
+        from matplotlib.patches import Patch
+        legend_elements = [
+            Patch(facecolor='#1f77b4', label='Original Features'),
+            Patch(facecolor='#ff7f0e', label='New Time Series Features (Tier 1+2)')
+        ]
+        ax.legend(handles=legend_elements, loc='lower right', fontsize=10)
+        plt.tight_layout()
+        plt.savefig('Result/SHAP_Top20_BarChart.png', dpi=300, bbox_inches='tight')
+        plt.close()
+
+        # Visualization 2: Feature Categories Breakdown
+        print("  [2/5] Creating Feature Categories Chart...")
+        category_importance = shap_df.groupby('Category')['Mean_SHAP'].sum().sort_values(ascending=False)
+
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 6))
+        colors_pie = ['#ff7f0e', '#1f77b4', '#2ca02c', '#d62728', '#9467bd', '#8c564b']
+        wedges, texts, autotexts = ax1.pie(
+            category_importance,
+            labels=category_importance.index,
+            autopct='%1.1f%%',
+            colors=colors_pie,
+            startangle=90,
+            textprops={'fontsize': 10}
+        )
+        for autotext in autotexts:
+            autotext.set_color('white')
+            autotext.set_fontweight('bold')
+        ax1.set_title('SHAP Importance by Feature Category', fontsize=14, fontweight='bold', pad=20)
+
+        ax2.barh(range(len(category_importance)), category_importance.values, color=colors_pie)
+        ax2.set_yticks(range(len(category_importance)))
+        ax2.set_yticklabels(category_importance.index, fontsize=10)
+        ax2.set_xlabel('Total SHAP Importance', fontsize=12, fontweight='bold')
+        ax2.set_title('Category Importance Ranking', fontsize=14, fontweight='bold', pad=20)
+        ax2.grid(axis='x', alpha=0.3)
+
+        for i, v in enumerate(category_importance.values):
+            ax2.text(v, i, f' {v:.3f}', va='center', fontsize=10)
+
+        plt.tight_layout()
+        plt.savefig('Result/SHAP_CategoryBreakdown.png', dpi=300, bbox_inches='tight')
+        plt.close()
+
+        # Visualization 3: Top Features Heatmap
+        print("  [3/5] Creating Feature Importance Heatmap...")
+        top_20_all_models = shap_df.nlargest(20, 'Mean_SHAP')[['XGBoost', 'LightGBM', 'CatBoost', 'Mean_SHAP']]
+
+        fig, ax = plt.subplots(figsize=(10, 12))
+        sns.heatmap(
+            top_20_all_models,
+            annot=True,
+            fmt='.3f',
+            cmap='YlOrRd',
+            cbar_kws={'label': 'SHAP Importance'},
+            ax=ax,
+            linewidths=0.5
+        )
+        ax.set_title('Top 20 Features - SHAP Importance Heatmap', fontsize=14, fontweight='bold', pad=20)
+        ax.set_xlabel('Model', fontsize=12, fontweight='bold')
+        ax.set_ylabel('Feature', fontsize=12, fontweight='bold')
+        plt.xticks(rotation=0)
+        plt.yticks(rotation=0, fontsize=10)
+        plt.tight_layout()
+        plt.savefig('Result/SHAP_Heatmap.png', dpi=300, bbox_inches='tight')
+        plt.close()
+
+        # Visualization 4: Model Comparison
+        print("  [4/5] Creating Model Comparison Chart...")
+        fig, ax = plt.subplots(figsize=(14, 10))
+        top_15 = shap_df.nlargest(15, 'Mean_SHAP')
+        x = np.arange(len(top_15))
+        width = 0.25
+
+        models = ['XGBoost', 'LightGBM', 'CatBoost']
+        colors_models = ['#1f77b4', '#ff7f0e', '#2ca02c']
+
+        for i, (model, color) in enumerate(zip(models, colors_models)):
+            if model in top_15.columns:
+                ax.barh(x + i*width, top_15[model], width, label=model, color=color, alpha=0.8)
+
+        ax.set_yticks(x + width)
+        ax.set_yticklabels(top_15.index, fontsize=10)
+        ax.set_xlabel('SHAP Importance', fontsize=12, fontweight='bold')
+        ax.set_title('Top 15 Features - Model Comparison', fontsize=14, fontweight='bold', pad=20)
+        ax.legend(loc='lower right', fontsize=11)
+        ax.grid(axis='x', alpha=0.3)
+        plt.tight_layout()
+        plt.savefig('Result/SHAP_ModelComparison.png', dpi=300, bbox_inches='tight')
+        plt.close()
+
+        # Visualization 5: New Features Impact
+        print("  [5/5] Creating New Features Impact Chart...")
+        tier1_features = shap_df[shap_df['Category'] == 'Tier 1: Overdue Patterns'].nlargest(10, 'Mean_SHAP')
+        tier2_features = shap_df[shap_df['Category'] == 'Tier 2: Advanced Time Series'].nlargest(10, 'Mean_SHAP')
+        history_features = shap_df[shap_df['Category'] == 'Customer History'].nlargest(5, 'Mean_SHAP')
+
+        fig, axes = plt.subplots(1, 3, figsize=(18, 6))
+
+        if len(tier1_features) > 0:
+            axes[0].barh(range(len(tier1_features)), tier1_features['Mean_SHAP'], color='#1f77b4')
+            axes[0].set_yticks(range(len(tier1_features)))
+            axes[0].set_yticklabels(tier1_features.index, fontsize=9)
+            axes[0].set_xlabel('SHAP Importance', fontsize=11, fontweight='bold')
+            axes[0].set_title('Tier 1: Overdue Patterns', fontsize=12, fontweight='bold')
+            axes[0].grid(axis='x', alpha=0.3)
+            for i, v in enumerate(tier1_features['Mean_SHAP']):
+                axes[0].text(v, i, f' {v:.3f}', va='center', fontsize=8)
+
+        if len(tier2_features) > 0:
+            axes[1].barh(range(len(tier2_features)), tier2_features['Mean_SHAP'], color='#ff7f0e')
+            axes[1].set_yticks(range(len(tier2_features)))
+            axes[1].set_yticklabels(tier2_features.index, fontsize=9)
+            axes[1].set_xlabel('SHAP Importance', fontsize=11, fontweight='bold')
+            axes[1].set_title('Tier 2: Advanced Time Series', fontsize=12, fontweight='bold')
+            axes[1].grid(axis='x', alpha=0.3)
+            for i, v in enumerate(tier2_features['Mean_SHAP']):
+                axes[1].text(v, i, f' {v:.3f}', va='center', fontsize=8)
+
+        if len(history_features) > 0:
+            axes[2].barh(range(len(history_features)), history_features['Mean_SHAP'], color='#2ca02c')
+            axes[2].set_yticks(range(len(history_features)))
+            axes[2].set_yticklabels(history_features.index, fontsize=9)
+            axes[2].set_xlabel('SHAP Importance', fontsize=11, fontweight='bold')
+            axes[2].set_title('Customer History', fontsize=12, fontweight='bold')
+            axes[2].grid(axis='x', alpha=0.3)
+            for i, v in enumerate(history_features['Mean_SHAP']):
+                axes[2].text(v, i, f' {v:.3f}', va='center', fontsize=8)
+
+        plt.suptitle('New Features Impact Analysis', fontsize=16, fontweight='bold', y=1.02)
+        plt.tight_layout()
+        plt.savefig('Result/SHAP_NewFeaturesImpact.png', dpi=300, bbox_inches='tight')
+        plt.close()
+
+        print(f"\n[OK] All SHAP visualizations saved to Result/ directory")
+
         # Log to W&B
         if pipeline.use_wandb and pipeline.wandb_run:
-            shap_table_data = [[feat, row['Mean_SHAP']] for feat, row in shap_df.head(20).iterrows()]
+            import os
+            result_dir = os.path.join(os.getcwd(), 'Result')
+
+            # Log table data
+            shap_table_data = [[feat, float(row['Mean_SHAP'])] for feat, row in shap_df.head(20).iterrows()]
             wandb.log({
                 "feature_importance/shap_values": wandb.Table(
                     data=shap_table_data,
                     columns=["Feature", "Mean_Abs_SHAP"]
                 )
             })
+
+            # Log visualization images with absolute paths
+            shap_images = {
+                "shap_visualizations/top20_bar_chart": os.path.join(result_dir, 'SHAP_Top20_BarChart.png'),
+                "shap_visualizations/category_breakdown": os.path.join(result_dir, 'SHAP_CategoryBreakdown.png'),
+                "shap_visualizations/heatmap": os.path.join(result_dir, 'SHAP_Heatmap.png'),
+                "shap_visualizations/model_comparison": os.path.join(result_dir, 'SHAP_ModelComparison.png'),
+                "shap_visualizations/new_features_impact": os.path.join(result_dir, 'SHAP_NewFeaturesImpact.png')
+            }
+
+            # Verify files exist and log them
+            for key, filepath in shap_images.items():
+                if os.path.exists(filepath):
+                    wandb.log({key: wandb.Image(filepath)})
+                    print(f"  [OK] Uploaded {key}")
+                else:
+                    print(f"  [WARNING] File not found: {filepath}")
+
+            # Log category breakdown table
+            category_table = wandb.Table(
+                columns=["Category", "Total_Importance", "Num_Features", "Avg_Importance"],
+                data=[
+                    [cat, float(importance), len(shap_df[shap_df['Category'] == cat]),
+                     float(importance / len(shap_df[shap_df['Category'] == cat]))]
+                    for cat, importance in category_importance.items()
+                ]
+            )
+            wandb.log({"shap_analysis/category_breakdown": category_table})
+
+            print(f"[OK] SHAP visualizations uploaded to WandB")
 
     # 14. IV Feature Importance (for categorical features)
     print("\n" + "=" * 80)
@@ -1765,6 +1950,9 @@ def train_with_real_data(use_best_params=False, best_params_path='Train/best_par
     print("\nTraining Stacking Ensemble...")
     stacking_model.fit(X_train_final, y_train)
 
+    # Store stacking model in pipeline for later saving
+    pipeline.ensemble_model = stacking_model
+
     # Evaluate Stacking
     stack_pred = stacking_model.predict(X_test_final)
     stack_pred_proba = stacking_model.predict_proba(X_test_final)[:, 1]
@@ -1909,7 +2097,7 @@ def train_with_real_data(use_best_params=False, best_params_path='Train/best_par
         print(f"\n[OK] W&B 結果已上傳: {pipeline.wandb_run.url}")
         wandb.finish()
 
-    return pipeline, results, woe_encoder
+    return pipeline, results, woe_encoder, optimal_thresholds
 
 
 def update_config_model_params(best_params, config_path='../config.py'):
@@ -2463,7 +2651,66 @@ if __name__ == "__main__":
 
     else:
         # 正常訓練（可選擇是否使用最佳參數）
-        pipeline, results, woe_encoder = train_with_real_data(
+        pipeline, results, woe_encoder, optimal_thresholds = train_with_real_data(
             use_best_params=args.use_best,
             best_params_path='Train/best_params.json'
         )
+
+        # Save models and WoE encoder
+        print("\n" + "=" * 80)
+        print("Saving Models and Optimal Thresholds")
+        print("=" * 80)
+
+        # Create models directory if not exists
+        os.makedirs('models', exist_ok=True)
+
+        # Save all individual models
+        for model_name, model in pipeline.models.items():
+            model_path = f'models/{model_name}.pkl'
+            joblib.dump(model, model_path)
+            print(f"[OK] {model_name} saved: {model_path}")
+
+        # Save WoE encoder
+        woe_path = 'models/woe_encoder.pkl'
+        joblib.dump(woe_encoder, woe_path)
+        print(f"[OK] WoE Encoder saved: {woe_path}")
+
+        # Save stacking model as best_model_stacking.pkl for prediction
+        if pipeline.ensemble_model is not None:
+            stacking_path = 'models/best_model_stacking.pkl'
+            joblib.dump(pipeline.ensemble_model, stacking_path)
+            print(f"[OK] Stacking model (for prediction) saved: {stacking_path}")
+
+        # Save optimal thresholds
+        import json
+        from datetime import datetime
+
+        threshold_config = {
+            'trained_date': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            'optimal_thresholds': {}
+        }
+
+        # Save each model's optimal threshold and metrics
+        for model_name, threshold_info in optimal_thresholds.items():
+            threshold_config['optimal_thresholds'][model_name] = {
+                'threshold': float(threshold_info['threshold']),
+                'recall': float(threshold_info['recall']),
+                'precision': float(threshold_info['precision']),
+                'f1': float(threshold_info['f1']),
+                'f2_score': float(threshold_info['f2_score'])
+            }
+
+        # Save recommended threshold (Stacking model)
+        if 'Stacking' in optimal_thresholds:
+            threshold_config['recommended_threshold'] = float(optimal_thresholds['Stacking']['threshold'])
+            threshold_config['recommended_model'] = 'Stacking'
+
+        threshold_path = 'models/optimal_thresholds.json'
+        with open(threshold_path, 'w', encoding='utf-8') as f:
+            json.dump(threshold_config, f, indent=2, ensure_ascii=False)
+
+        print(f"[OK] Optimal thresholds saved: {threshold_path}")
+        if 'Stacking' in optimal_thresholds:
+            print(f"     Recommended threshold: {optimal_thresholds['Stacking']['threshold']:.3f} (Stacking model)")
+            print(f"     Expected Recall: {optimal_thresholds['Stacking']['recall']:.2%}")
+            print(f"     Expected Precision: {optimal_thresholds['Stacking']['precision']:.2%}")
