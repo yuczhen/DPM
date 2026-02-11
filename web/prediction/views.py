@@ -6,8 +6,9 @@ import sys
 from datetime import datetime
 
 import pandas as pd
+from django.conf import settings
 from django.http import HttpResponse
-from django.shortcuts import render
+from django.shortcuts import redirect, render
 
 from .forms import PredictionForm
 
@@ -148,6 +149,32 @@ def predict_model(cleaned_data: dict) -> dict:
         "recommendation": recommendation,
         "input_summary": input_summary,
     }
+
+
+# ─────────────────────────────────────────────────────────────
+# 登入 / 登出
+# ─────────────────────────────────────────────────────────────
+def login_view(request):
+    """共用密碼登入頁面。"""
+    if request.session.get("authenticated"):
+        return redirect("prediction:prediction_page")
+
+    error = False
+    if request.method == "POST":
+        password = request.POST.get("password", "")
+        access_pw = getattr(settings, "DPM_ACCESS_PASSWORD", "dpm2026")
+        if password == access_pw:
+            request.session["authenticated"] = True
+            return redirect("prediction:prediction_page")
+        error = True
+
+    return render(request, "prediction/login.html", {"error": error})
+
+
+def logout_view(request):
+    """登出並清除 session。"""
+    request.session.flush()
+    return redirect("prediction:login")
 
 
 # ─────────────────────────────────────────────────────────────

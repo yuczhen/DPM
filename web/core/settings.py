@@ -36,6 +36,7 @@ MIDDLEWARE = [
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
+    "prediction.middleware.PasswordProtectMiddleware",
 ]
 
 ROOT_URLCONF = "core.urls"
@@ -79,5 +80,8 @@ STORAGES = {
         "BACKEND": "whitenoise.storage.CompressedManifestStaticFilesStorage",
     },
 }
+
+# ── 密碼保護 ──
+DPM_ACCESS_PASSWORD = os.environ.get("DPM_ACCESS_PASSWORD", "dpm2026")
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
