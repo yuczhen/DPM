@@ -1,0 +1,33 @@
+# Git
+.git/
+.gitignore
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+
+# Training data & logs (not needed at runtime)
+Train/data/
+Train/wandb/
+Train/Result/
+Train/*.py
+!Train/feature_engineering.py
+
+# Prediction source & results (not needed at runtime)
+Prediction/Source/
+Prediction/Result/
+Prediction/Prediction data/
+
+# Root-level files not needed in container
+requirements.txt
+*.md
+.env
+.claude/
