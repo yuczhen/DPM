@@ -1,3 +1,4 @@
+{% load static %}
 <!DOCTYPE html>
 <html lang="zh-TW">
 <head>
@@ -32,15 +33,38 @@
   </style>
 </head>
 
-<body class="min-h-screen bg-gradient-to-br from-sunset-50 via-white to-orange-50">
+<body class="min-h-screen bg-gray-900 relative">
+  <!-- Background image -->
+  <div class="fixed inset-0 z-0">
+    <img src="{% static 'prediction/images/nyc-skyline.jpg' %}" alt="" class="w-full h-full object-cover" />
+    <div class="absolute inset-0 bg-white/75"></div>
+  </div>
 
   <!-- ═══ Navbar（sticky 固定頂部）═══ -->
-  <nav class="bg-gradient-to-r from-sunset-700 via-sunset-600 to-amber-600 shadow-lg sticky top-0 z-40">
+  <nav class="bg-gradient-to-r from-sunset-700 via-sunset-600 to-amber-600 shadow-lg sticky top-0 z-40 relative">
     <div class="max-w-screen-2xl mx-auto px-6 py-4 flex items-center justify-between">
       <div class="flex items-center gap-3">
         <div class="w-10 h-10 rounded-xl bg-white/20 flex items-center justify-center">
-          <svg class="w-6 h-6 text-white" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6m6 0h6m-6 0V9a2 2 0 012-2h2a2 2 0 012 2v10m6 0v-4a2 2 0 00-2-2h-2a2 2 0 00-2 2v4"/>
+          <svg class="w-6 h-6" viewBox="0 0 24 24" fill="none">
+            <circle cx="12" cy="12" r="1.3" fill="white"/>
+            <circle cx="12" cy="7.8" r="1" fill="white"/>
+            <circle cx="15.64" cy="9.9" r="1" fill="white"/>
+            <circle cx="15.64" cy="14.1" r="1" fill="white"/>
+            <circle cx="12" cy="16.2" r="1" fill="white"/>
+            <circle cx="8.36" cy="14.1" r="1" fill="white"/>
+            <circle cx="8.36" cy="9.9" r="1" fill="white"/>
+            <circle cx="12" cy="4.2" r=".7" fill="white" opacity=".8"/>
+            <circle cx="15.9" cy="5.25" r=".7" fill="white" opacity=".8"/>
+            <circle cx="18.75" cy="8.1" r=".7" fill="white" opacity=".8"/>
+            <circle cx="19.8" cy="12" r=".7" fill="white" opacity=".8"/>
+            <circle cx="18.75" cy="15.9" r=".7" fill="white" opacity=".8"/>
+            <circle cx="15.9" cy="18.75" r=".7" fill="white" opacity=".8"/>
+            <circle cx="12" cy="19.8" r=".7" fill="white" opacity=".8"/>
+            <circle cx="8.1" cy="18.75" r=".7" fill="white" opacity=".8"/>
+            <circle cx="5.25" cy="15.9" r=".7" fill="white" opacity=".8"/>
+            <circle cx="4.2" cy="12" r=".7" fill="white" opacity=".8"/>
+            <circle cx="5.25" cy="8.1" r=".7" fill="white" opacity=".8"/>
+            <circle cx="8.1" cy="5.25" r=".7" fill="white" opacity=".8"/>
           </svg>
         </div>
         <span class="text-white text-xl font-bold tracking-wide" data-i18n="nav.title">DPM 違約預測系統</span>
@@ -65,7 +89,7 @@
     </div>
   </nav>
 
-  <main class="max-w-screen-2xl mx-auto px-4 sm:px-6 py-8">
+  <main class="max-w-screen-2xl mx-auto px-4 sm:px-6 py-8 relative z-10">
 
     <!-- ════════════════════════════════════════════════════════
          Option 2: 左右並排佈局（左＝輸入，右＝儀表板）
@@ -448,8 +472,8 @@
   </div>
 
   <!-- Footer -->
-  <footer class="text-center py-6 text-sm text-gray-400">
-    &copy; 2026 DPM — Default Prediction Model. YC Intelligence. All rights reserved.
+  <footer class="text-center py-6 text-sm text-gray-600 font-medium relative z-10" style="text-shadow: 0 1px 2px rgba(0,0,0,.1);">
+    &copy; 2026 Default Prediction Model. YC Intelligence. All rights reserved.
   </footer>
 
   <!-- ═══ Scripts ═══ -->
@@ -569,6 +593,15 @@
         "label.overdue_month_4": "第四個月逾期次數",
         "label.overdue_month_5": "第五個月逾期次數",
         "label.overdue_month_6": "第六個月逾期次數",
+        // Placeholder translations
+        "ph.month_salary": "例：45000",
+        "ph.job_tenure": "例：3.5",
+        "ph.loan_term": "例：36",
+        "ph.paid_installments": "例：12",
+        "ph.debt_to_income_ratio": "例：0.35（35%）",
+        "ph.payment_to_income_ratio": "例：0.15（15%）",
+        "ph.post_code_permanent": "例：100",
+        "ph.post_code_residential": "例：106",
       },
       en: {
         "nav.title": "DPM Default Prediction System",
@@ -626,7 +659,65 @@
         "label.overdue_month_4": "Overdue 4th month",
         "label.overdue_month_5": "Overdue 5th month",
         "label.overdue_month_6": "Overdue 6th month",
+        // Placeholder translations
+        "ph.month_salary": "e.g. 45000",
+        "ph.job_tenure": "e.g. 3.5",
+        "ph.loan_term": "e.g. 36",
+        "ph.paid_installments": "e.g. 12",
+        "ph.debt_to_income_ratio": "e.g. 0.35 (35%)",
+        "ph.payment_to_income_ratio": "e.g. 0.15 (15%)",
+        "ph.post_code_permanent": "e.g. 100",
+        "ph.post_code_residential": "e.g. 106",
       }
+    };
+
+    // Select option translations (value → EN display text)
+    const optionI18n = {
+      "-- 請選擇 --": "-- Select --",
+      "研究所以上": "Grad+",
+      "碩士": "Master",
+      "專科/大學": "College/Univ",
+      "大學": "University",
+      "專科": "College",
+      "高中/職": "HS/Voc",
+      "高中": "High School",
+      "小學": "Elementary",
+      "其他": "Other",
+      "自有": "Owned",
+      "租屋": "Rented",
+      "配偶": "Spouse",
+      "親屬": "Family",
+      "宿舍": "Dormitory",
+      "製造業": "Manufacturing",
+      "服務業": "Services",
+      "商業": "Commerce",
+      "科技業": "Tech",
+      "金融業": "Finance",
+      "保險業": "Insurance",
+      "證券及期貨業": "Securities",
+      "公教人員": "Gov/Education",
+      "軍人": "Military",
+      "餐飲業": "F&B",
+      "運輸業": "Transport",
+      "營造業": "Construction",
+      "不動產業": "Real Estate",
+      "倉儲業": "Warehousing",
+      "通信業": "Telecom",
+      "水電燃氣業": "Utilities",
+      "農牧林漁": "Agriculture",
+      "漁業": "Fishery",
+      "礦業及土石採取業": "Mining",
+      "專業人士": "Professional",
+      "自由業": "Freelance",
+      "網拍業": "E-commerce",
+      "學生": "Student",
+      "家管": "Homemaker",
+      "社會團體即個人服務": "Social/Personal",
+      "商品融資": "Product Loan",
+      "瘦身美容": "Beauty",
+      "3C家電": "3C/Appliance",
+      "個人用品": "Personal",
+      "婚友聯誼": "Matchmaking",
     };
 
     let currentLang = localStorage.getItem("dpm_lang") || "zh";
@@ -651,11 +742,42 @@
       // Translate form field labels
       document.querySelectorAll("label[for]").forEach(label => {
         const forId = label.getAttribute("for");
-        // Django generates id_<field_name>
         const fieldName = forId.replace("id_", "");
         const key = "label." + fieldName;
         if (i18n[lang][key]) {
           label.textContent = i18n[lang][key];
+        }
+      });
+
+      // Translate select options
+      document.querySelectorAll("select.form-select option").forEach(opt => {
+        const val = opt.value || opt.textContent.trim();
+        if (!opt.dataset.zh) opt.dataset.zh = opt.textContent;
+        if (lang === "en" && optionI18n[opt.dataset.zh]) {
+          opt.textContent = optionI18n[opt.dataset.zh];
+        } else if (lang === "zh" && opt.dataset.zh) {
+          opt.textContent = opt.dataset.zh;
+        }
+      });
+
+      // Translate placeholders
+      document.querySelectorAll("input.form-input[id]").forEach(input => {
+        const fieldName = input.id.replace("id_", "");
+        const key = "ph." + fieldName;
+        if (i18n[lang][key]) {
+          input.placeholder = i18n[lang][key];
+        }
+      });
+
+      // Translate help text
+      document.querySelectorAll("input.form-input[id]").forEach(input => {
+        const helpEl = input.parentElement.querySelector("p.text-gray-400");
+        if (!helpEl) return;
+        if (!helpEl.dataset.zh) helpEl.dataset.zh = helpEl.textContent;
+        if (input.id === "id_debt_to_income_ratio") {
+          helpEl.textContent = lang === "en" ? "0.35 = 35%" : helpEl.dataset.zh;
+        } else if (input.id === "id_payment_to_income_ratio") {
+          helpEl.textContent = lang === "en" ? "0.15 = 15%" : helpEl.dataset.zh;
         }
       });
     }
