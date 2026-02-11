@@ -1,0 +1,570 @@
+import csv
+import io
+import json
+import os
+import sys
+from datetime import datetime
+
+import pandas as pd
+from django.http import HttpResponse
+from django.shortcuts import render
+
+from .forms import PredictionForm
+
+# ─────────────────────────────────────────────────────────────
+# 表單欄位名稱 → 模型 DataFrame 欄位名稱的映射
+# ─────────────────────────────────────────────────────────────
+FORM_TO_MODEL_MAPPING = {
+    "education": "education",
+    "month_salary": "month salary",
+    "job_tenure": "job tenure",
+    "residence_status": "residence status",
+    "main_business": "main business",
+    "product": "product",
+    "loan_term": "loan term",
+    "paid_installments": "paid installments",
+    "debt_to_income_ratio": "debt_to_income_ratio",
+    "payment_to_income_ratio": "payment_to_income_ratio",
+    "post_code_permanent": "post code of permanent address",
+    "post_code_residential": "post code of residential address",
+    "overdue_before_first": "number of overdue before the first month",
+    "overdue_first_half": "number of overdue in the first half of the first month",
+    "overdue_first_second_half": "number of overdue in the second half of the first month",
+    "overdue_month_2": "number of overdue in the second month",
+    "overdue_month_3": "number of overdue in the third month",
+    "overdue_month_4": "number of overdue in the fourth month",
+    "overdue_month_5": "number of overdue in the fifth month",
+    "overdue_month_6": "number of overdue in the sixth month",
+}
+
+# ─────────────────────────────────────────────────────────────
+# 載入 DPMPredictor（僅在首次呼叫時初始化）
+# ─────────────────────────────────────────────────────────────
+_predictor = None
+
+
+def _get_predictor():
+    """延遲載入 DPMPredictor 單例。"""
+    global _predictor
+    if _predictor is not None:
+        return _predictor
+
+    # 將專案根目錄加入 sys.path
+    project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+    prediction_dir = os.path.join(project_root, "Prediction")
+    if prediction_dir not in sys.path:
+        sys.path.insert(0, prediction_dir)
+
+    # 切換工作目錄以便相對路徑正確解析
+    original_cwd = os.getcwd()
+    os.chdir(prediction_dir)
+    try:
+        from predict import DPMPredictor
+        _predictor = DPMPredictor()
+    finally:
+        os.chdir(original_cwd)
+
+    return _predictor
+
+
+def _form_to_dataframe(cleaned_data: dict) -> pd.DataFrame:
+    """將 Django 表單清洗後的資料轉為模型所需的單行 DataFrame。"""
+    row = {}
+    for form_field, model_col in FORM_TO_MODEL_MAPPING.items():
+        row[model_col] = cleaned_data[form_field]
+    return pd.DataFrame([row])
+
+
+# ─────────────────────────────────────────────────────────────
+# 模型預測
+# ─────────────────────────────────────────────────────────────
+def predict_model(cleaned_data: dict) -> dict:
+    """
+    接收表單清洗後的資料，呼叫真實 DPMPredictor 回傳預測結果。
+
+    Returns:
+        {
+            "default_probability": float,   # 0‑100
+            "risk_score": float,            # 0‑100
+            "risk_grade": str,              # A (優良) / B (中等) / ...
+            "risk_label": str,              # 人類可讀短標籤
+            "risk_color": str,              # Tailwind 色系
+            "risk_alert": str,              # LOW RISK / HIGH RISK / ...
+            "recommendation": str,          # 建議行動
+            "input_summary": dict,          # 原始輸入摘要
+        }
+    """
+    predictor = _get_predictor()
+    df = _form_to_dataframe(cleaned_data)
+
+    # 呼叫模型
+    result_df = predictor.predict_with_details(df, simplified_output=False)
+    row = result_df.iloc[0]
+
+    prob = float(row["default_probability"])       # 已是百分比 0-100
+    risk_score = int(row["risk_score"])             # 0-100
+    risk_grade = str(row["risk_grade"])             # e.g. "A (優良)"
+    risk_alert = str(row["risk_alert"])             # e.g. "LOW RISK"
+    recommendation = str(row.get("risk_action_optimal", row.get("risk_action", "")))
+
+    # 風險等級 → 短標籤 + 顏色
+    grade_letter = risk_grade[0] if risk_grade else "C"
+    label_map = {"A": "極低風險", "B": "中等風險", "C": "高風險", "D": "極高風險", "E": "危急風險"}
+    color_map = {"A": "emerald", "B": "green", "C": "amber", "D": "orange", "E": "red"}
+    risk_label = label_map.get(grade_letter, "未知")
+    risk_color = color_map.get(grade_letter, "gray")
+
+    # 輸入摘要
+    input_summary = {
+        "教育程度": cleaned_data.get("education", ""),
+        "月薪": f'{cleaned_data.get("month_salary", 0):,.0f} 元',
+        "工作年資": f'{cleaned_data.get("job_tenure", 0)} 年',
+        "居住狀態": cleaned_data.get("residence_status", ""),
+        "行業別": cleaned_data.get("main_business", ""),
+        "產品類型": cleaned_data.get("product", ""),
+        "貸款期數": f'{cleaned_data.get("loan_term", 0)} 期',
+        "已繳期數": f'{cleaned_data.get("paid_installments", 0)} 期',
+        "負債收入比": f'{cleaned_data.get("debt_to_income_ratio", 0)}',
+        "還款收入比": f'{cleaned_data.get("payment_to_income_ratio", 0)}',
+        "戶籍郵遞區號": str(cleaned_data.get("post_code_permanent", "")),
+        "居住郵遞區號": str(cleaned_data.get("post_code_residential", "")),
+        "逾期總次數": str(sum(
+            cleaned_data.get(f, 0) for f in [
+                "overdue_before_first", "overdue_first_half",
+                "overdue_first_second_half", "overdue_month_2",
+                "overdue_month_3", "overdue_month_4",
+                "overdue_month_5", "overdue_month_6",
+            ]
+        )),
+    }
+
+    return {
+        "default_probability": round(prob, 2),
+        "risk_score": risk_score,
+        "risk_grade": risk_grade,
+        "risk_label": risk_label,
+        "risk_color": risk_color,
+        "risk_alert": risk_alert,
+        "recommendation": recommendation,
+        "input_summary": input_summary,
+    }
+
+
+# ─────────────────────────────────────────────────────────────
+# Views
+# ─────────────────────────────────────────────────────────────
+def prediction_page(request):
+    """主預測頁面：GET 顯示表單，POST 處理預測。"""
+    result = None
+    error_msg = None
+
+    if request.method == "POST":
+        form = PredictionForm(request.POST)
+        if form.is_valid():
+            try:
+                result = predict_model(form.cleaned_data)
+                # 存入 session 以供下載使用
+                request.session["last_prediction"] = {
+                    "result": result,
+                    "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                }
+            except Exception as e:
+                error_msg = f"預測過程發生錯誤：{e}"
+    else:
+        form = PredictionForm()
+
+    return render(request, "prediction/prediction_page.html", {
+        "form": form,
+        "result": result,
+        "result_json": json.dumps(result, ensure_ascii=False) if result else "null",
+        "error_msg": error_msg,
+    })
+
+
+# ─────────────────────────────────────────────────────────────
+# 欄位分級：依 SHAP 重要性 + 模型程式碼是否有缺失保護
+# ─────────────────────────────────────────────────────────────
+# 【必填】模型程式碼直接存取、無 guard，缺少會 crash
+CRITICAL_COLUMNS = [
+    "loan term",                          # SHAP 0.234 — 用於 payment_progress_ratio
+    "paid installments",                  # SHAP 0.147 — 用於 payment_progress_ratio
+    "post code of residential address",   # SHAP 0.212 — WoE 編碼
+    "education",                          # SHAP 0.065 — WoE 編碼
+    "main business",                      # SHAP 0.057 — WoE 編碼
+    "job tenure",                         # SHAP 0.049 — 用於 job_stable
+    "month salary",                       # SHAP 0.032 — 用於 payment_pressure
+    "post code of permanent address",     # SHAP 0.008 — 用於 address_match
+    "residence status",                   # SHAP 0.005 — WoE 編碼
+    "product",                            # SHAP ≈0    — WoE 編碼（模型必要）
+]
+
+# 【選填】模型程式碼有 `if col in df.columns` 保護，缺少不會 crash
+# 但會影響預測品質，缺少時預設填 0 並提示使用者
+OPTIONAL_COLUMNS = {
+    # 欄位名: (預設值, SHAP 重要性等級)
+    "number of overdue before the first month":               (0, "★★★ 極高"),
+    "number of overdue in the first half of the first month": (0, "★★★ 極高"),
+    "number of overdue in the second half of the first month":(0, "★★★ 極高"),
+    "number of overdue in the second month":                  (0, "★★★ 極高"),
+    "number of overdue in the third month":                   (0, "★★★ 極高"),
+    "number of overdue in the fourth month":                  (0, "★★★ 極高"),
+    "number of overdue in the fifth month":                   (0, "★★★ 極高"),
+    "number of overdue in the sixth month":                   (0, "★★★ 極高"),
+    "debt_to_income_ratio":                                   (0, "★☆☆ 低"),
+    "payment_to_income_ratio":                                (0, "★☆☆ 低"),
+}
+
+
+def upload_predict(request):
+    """上傳 Excel/CSV 批次預測。"""
+    if request.method != "POST" or "file" not in request.FILES:
+        return HttpResponse("請上傳檔案。", status=400)
+
+    uploaded = request.FILES["file"]
+    ext = os.path.splitext(uploaded.name)[1].lower()
+
+    try:
+        if ext == ".csv":
+            df = pd.read_csv(uploaded)
+        elif ext in (".xlsx", ".xls"):
+            # 嘗試找到含有正確欄位的工作表
+            xls = pd.ExcelFile(uploaded, engine="openpyxl")
+            df = None
+            # 優先讀取「空白範本」或第一個含有必填欄位的 sheet
+            preferred_sheets = ["空白範本", "填寫範例"]
+            for sheet in preferred_sheets + xls.sheet_names:
+                if sheet not in xls.sheet_names:
+                    continue
+                candidate = pd.read_excel(xls, sheet_name=sheet)
+                candidate.columns = [str(c).strip() for c in candidate.columns]
+                if any(col in candidate.columns for col in CRITICAL_COLUMNS):
+                    df = candidate
+                    break
+            if df is None:
+                # 都找不到就讀第一個 sheet
+                df = pd.read_excel(xls, sheet_name=0)
+        else:
+            return HttpResponse("僅支援 .xlsx / .xls / .csv 格式。", status=400)
+    except Exception as e:
+        return HttpResponse(f"檔案讀取失敗：{e}", status=400)
+
+    # 欄位驗證：清理欄位名稱（去除前後空白和換行）
+    df.columns = [col.strip() for col in df.columns]
+
+    # 1) 必填欄位：缺少 → 擋下
+    missing_critical = [col for col in CRITICAL_COLUMNS if col not in df.columns]
+    if missing_critical:
+        missing_str = "、".join(missing_critical)
+        return render(request, "prediction/prediction_page.html", {
+            "form": PredictionForm(),
+            "result_json": "null",
+            "error_msg": (
+                f"上傳的檔案缺少以下【必填】欄位（共 {len(missing_critical)} 個）：\n"
+                f"{missing_str}\n\n"
+                f"檔案現有欄位：{', '.join(df.columns.tolist())}"
+            ),
+        })
+
+    # 2) 選填欄位：缺少 → 填預設值 + 記錄警告
+    warning_lines = []
+    for col, (default_val, importance) in OPTIONAL_COLUMNS.items():
+        if col not in df.columns:
+            df[col] = default_val
+            warning_lines.append(f"• {col}（重要性：{importance}，已預設為 {default_val}）")
+
+    warning_msg = None
+    if warning_lines:
+        warning_msg = (
+            f"⚠ 以下 {len(warning_lines)} 個選填欄位未提供，已自動填入預設值。\n"
+            "若為新客戶（無歷史逾期記錄），預設值 0 為合理值；\n"
+            "若為回頭客，缺少逾期欄位將顯著影響預測準確度。\n\n"
+            + "\n".join(warning_lines)
+        )
+
+    predictor = _get_predictor()
+
+    # 保留原始資料中的非模型欄位（如 name, ID 等）
+    all_model_cols = set(CRITICAL_COLUMNS) | set(OPTIONAL_COLUMNS.keys())
+    extra_cols = [c for c in df.columns if c not in all_model_cols]
+    extra_df = df[extra_cols].reset_index(drop=True) if extra_cols else None
+
+    # 切換工作目錄以便相對路徑正確
+    project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+    prediction_dir = os.path.join(project_root, "Prediction")
+    original_cwd = os.getcwd()
+    os.chdir(prediction_dir)
+    try:
+        result_df = predictor.predict_with_details(df, simplified_output=True)
+    except Exception as e:
+        return render(request, "prediction/prediction_page.html", {
+            "form": PredictionForm(),
+            "result_json": "null",
+            "error_msg": f"批次預測失敗：{e}",
+        })
+    finally:
+        os.chdir(original_cwd)
+
+    # 將非模型欄位（name 等）合併到結果最前面
+    result_df = result_df.reset_index(drop=True)
+    if extra_df is not None:
+        result_df = pd.concat([extra_df, result_df], axis=1)
+
+    # 移除內部技術欄位（業務使用者不需要看）
+    drop_cols = ["predicted_default", "predicted_default_optimal", "threshold_difference"]
+    result_df = result_df.drop(columns=[c for c in drop_cols if c in result_df.columns])
+
+    # 存入 session 供下載
+    batch_records = result_df.to_dict(orient="records")
+    batch_columns = list(result_df.columns)
+    request.session["batch_result"] = {
+        "records": json.loads(json.dumps(batch_records, default=str)),
+        "columns": batch_columns,
+        "count": len(result_df),
+        "filename": uploaded.name,
+        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+    }
+
+    # 統計摘要
+    summary = {
+        "total": len(result_df),
+        "filename": uploaded.name,
+    }
+    if "risk_grade" in result_df.columns:
+        summary["grade_counts"] = result_df["risk_grade"].value_counts().to_dict()
+    if "default_probability" in result_df.columns:
+        summary["avg_prob"] = round(float(result_df["default_probability"].mean()), 2)
+        summary["max_prob"] = round(float(result_df["default_probability"].max()), 2)
+        summary["min_prob"] = round(float(result_df["default_probability"].min()), 2)
+
+    return render(request, "prediction/prediction_page.html", {
+        "form": PredictionForm(),
+        "batch_summary": summary,
+        "result_json": "null",
+        "warning_msg": warning_msg,
+    })
+
+
+def download_batch_result(request):
+    """下載批次預測結果 Excel（含格式美化）。"""
+    batch = request.session.get("batch_result")
+    if not batch:
+        return HttpResponse("尚無批次預測結果可下載。", status=400)
+
+    from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+    from openpyxl.utils import get_column_letter
+
+    result_df = pd.DataFrame(batch["records"], columns=batch["columns"])
+    timestamp = batch["timestamp"].replace(":", "").replace(" ", "_")
+
+    # 欄位中文名對照
+    COL_LABELS = {
+        "name": "姓名",
+        "default_probability": "違約機率 (%)",
+        "risk_score": "風險分數",
+        "risk_grade": "風險等級",
+        "risk_action": "建議行動",
+        "risk_action_optimal": "建議行動（最佳）",
+        "risk_alert": "風險警示",
+    }
+
+    buffer = io.BytesIO()
+    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
+        result_df.to_excel(writer, sheet_name="預測結果", index=False)
+        ws = writer.sheets["預測結果"]
+
+        # ── 樣式定義 ──
+        header_font = Font(bold=True, color="FFFFFF", size=11)
+        header_fill = PatternFill(start_color="C2410C", end_color="C2410C", fill_type="solid")
+        header_align = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        cell_align_center = Alignment(horizontal="center", vertical="center")
+        cell_align_left = Alignment(horizontal="left", vertical="center", wrap_text=True)
+        thin_border = Border(
+            bottom=Side(style="thin", color="D1D5DB"),
+        )
+
+        # 風險等級底色
+        grade_fills = {
+            "A": PatternFill(start_color="D1FAE5", end_color="D1FAE5", fill_type="solid"),  # emerald
+            "B": PatternFill(start_color="DCFCE7", end_color="DCFCE7", fill_type="solid"),  # green
+            "C": PatternFill(start_color="FEF3C7", end_color="FEF3C7", fill_type="solid"),  # amber
+            "D": PatternFill(start_color="FFEDD5", end_color="FFEDD5", fill_type="solid"),  # orange
+            "E": PatternFill(start_color="FEE2E2", end_color="FEE2E2", fill_type="solid"),  # red
+        }
+
+        # 需要靠左對齊的欄位（文字較長）
+        left_align_cols = {"risk_action", "risk_action_optimal", "risk_alert", "name"}
+
+        num_cols = len(result_df.columns)
+        num_rows = len(result_df)
+
+        # ── 表頭格式 + 中文名 ──
+        for col_idx in range(1, num_cols + 1):
+            cell = ws.cell(row=1, column=col_idx)
+            orig_name = cell.value
+            cell.value = COL_LABELS.get(orig_name, orig_name)
+            cell.font = header_font
+            cell.fill = header_fill
+            cell.alignment = header_align
+            cell.border = thin_border
+
+        # ── 資料列格式 ──
+        for row_idx in range(2, num_rows + 2):
+            for col_idx in range(1, num_cols + 1):
+                cell = ws.cell(row=row_idx, column=col_idx)
+                col_name = result_df.columns[col_idx - 1]
+
+                # 對齊
+                if col_name in left_align_cols:
+                    cell.alignment = cell_align_left
+                else:
+                    cell.alignment = cell_align_center
+
+                cell.border = thin_border
+
+            # 整列依風險等級上底色
+            grade_col_idx = list(result_df.columns).index("risk_grade") + 1 if "risk_grade" in result_df.columns else None
+            if grade_col_idx:
+                grade_val = str(ws.cell(row=row_idx, column=grade_col_idx).value or "")
+                grade_letter = grade_val[0] if grade_val else ""
+                row_fill = grade_fills.get(grade_letter)
+                if row_fill:
+                    for col_idx in range(1, num_cols + 1):
+                        ws.cell(row=row_idx, column=col_idx).fill = row_fill
+
+        # ── 欄寬自動調整 ──
+        for col_idx in range(1, num_cols + 1):
+            col_name = result_df.columns[col_idx - 1]
+            header_len = len(str(COL_LABELS.get(col_name, col_name)))
+            max_len = max(header_len, 8)  # 最少 8
+            # 抽樣前 20 行估算寬度
+            for row_idx in range(2, min(num_rows + 2, 22)):
+                val = str(ws.cell(row=row_idx, column=col_idx).value or "")
+                max_len = max(max_len, len(val))
+            # 中文字寬度 ×1.8，上限 40
+            width = min(max_len * 1.8 + 2, 40)
+            ws.column_dimensions[get_column_letter(col_idx)].width = width
+
+        # ── 凍結首列 ──
+        ws.freeze_panes = "A2"
+
+    buffer.seek(0)
+
+    response = HttpResponse(
+        buffer.getvalue(),
+        content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+    response["Content-Disposition"] = (
+        f'attachment; filename="batch_prediction_{timestamp}.xlsx"'
+    )
+    return response
+
+
+def download_csv(request):
+    """下載 CSV 格式預測報表。"""
+    prediction = request.session.get("last_prediction")
+    if not prediction:
+        return HttpResponse("尚無預測結果可下載。", status=400)
+
+    result = prediction["result"]
+    timestamp = prediction["timestamp"]
+
+    response = HttpResponse(content_type="text/csv; charset=utf-8-sig")
+    response["Content-Disposition"] = (
+        f'attachment; filename="prediction_report_{timestamp.replace(":", "").replace(" ", "_")}.csv"'
+    )
+
+    writer = csv.writer(response)
+    writer.writerow(["違約預測報表"])
+    writer.writerow(["產出時間", timestamp])
+    writer.writerow([])
+
+    # 預測結果
+    writer.writerow(["== 預測結果 =="])
+    writer.writerow(["違約機率", f'{result["default_probability"]}%'])
+    writer.writerow(["風險分數", result["risk_score"]])
+    writer.writerow(["風險等級", result["risk_grade"]])
+    writer.writerow(["風險標籤", result["risk_label"]])
+    writer.writerow(["風險警示", result["risk_alert"]])
+    writer.writerow(["建議行動", result["recommendation"]])
+    writer.writerow([])
+
+    # 輸入摘要
+    writer.writerow(["== 輸入資料摘要 =="])
+    for key, value in result["input_summary"].items():
+        writer.writerow([key, value])
+
+    return response
+
+
+def download_excel(request):
+    """下載 Excel 格式預測報表。"""
+    prediction = request.session.get("last_prediction")
+    if not prediction:
+        return HttpResponse("尚無預測結果可下載。", status=400)
+
+    result = prediction["result"]
+    timestamp = prediction["timestamp"]
+
+    try:
+        import openpyxl
+        from openpyxl.styles import Alignment, Font, PatternFill
+    except ImportError:
+        return HttpResponse("伺服器缺少 openpyxl 套件，請先安裝。", status=500)
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "違約預測報表"
+
+    # 標題
+    header_font = Font(bold=True, size=14, color="FFFFFF")
+    header_fill = PatternFill(start_color="E65100", end_color="E65100", fill_type="solid")
+    ws.merge_cells("A1:B1")
+    ws["A1"] = "違約預測報表"
+    ws["A1"].font = header_font
+    ws["A1"].fill = header_fill
+    ws["A1"].alignment = Alignment(horizontal="center")
+
+    ws["A2"] = "產出時間"
+    ws["B2"] = timestamp
+
+    # 預測結果
+    section_font = Font(bold=True, size=11)
+    ws["A4"] = "預測結果"
+    ws["A4"].font = section_font
+
+    rows = [
+        ("違約機率", f'{result["default_probability"]}%'),
+        ("風險分數", result["risk_score"]),
+        ("風險等級", result["risk_grade"]),
+        ("風險標籤", result["risk_label"]),
+        ("風險警示", result["risk_alert"]),
+        ("建議行動", result["recommendation"]),
+    ]
+    for i, (k, v) in enumerate(rows, start=5):
+        ws[f"A{i}"] = k
+        ws[f"B{i}"] = v
+
+    # 輸入摘要
+    row_offset = 5 + len(rows) + 1
+    ws[f"A{row_offset}"] = "輸入資料摘要"
+    ws[f"A{row_offset}"].font = section_font
+    for i, (k, v) in enumerate(result["input_summary"].items(), start=row_offset + 1):
+        ws[f"A{i}"] = k
+        ws[f"B{i}"] = v
+
+    # 欄寬
+    ws.column_dimensions["A"].width = 20
+    ws.column_dimensions["B"].width = 40
+
+    buffer = io.BytesIO()
+    wb.save(buffer)
+    buffer.seek(0)
+
+    response = HttpResponse(
+        buffer.getvalue(),
+        content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+    response["Content-Disposition"] = (
+        f'attachment; filename="prediction_report_{timestamp.replace(":", "").replace(" ", "_")}.xlsx"'
+    )
+    return response

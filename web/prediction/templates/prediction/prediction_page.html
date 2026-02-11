@@ -1,0 +1,529 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>DPM — 違約預測系統</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            sunset: {
+              50:  '#FFF8F0', 100: '#FFEDD5', 200: '#FED7AA', 300: '#FDBA74',
+              400: '#FB923C', 500: '#F97316', 600: '#EA580C', 700: '#C2410C',
+              800: '#9A3412', 900: '#7C2D12',
+            },
+            gold: { 400: '#FACC15', 500: '#EAB308', 600: '#CA8A04' }
+          }
+        }
+      }
+    }
+  </script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+  <style>
+    .spinner { width:40px; height:40px; border:4px solid #FED7AA; border-top-color:#EA580C; border-radius:50%; animation:spin .8s linear infinite; }
+    @keyframes spin { to { transform:rotate(360deg); } }
+    .result-section { animation: fadeSlideUp .6s ease-out; }
+    @keyframes fadeSlideUp { from{opacity:0;transform:translateY(24px)} to{opacity:1;transform:translateY(0)} }
+    .form-input,.form-select { width:100%; padding:.5rem .75rem; border:1px solid #D1D5DB; border-radius:.5rem; font-size:.875rem; transition:border-color .15s,box-shadow .15s; background:#fff; }
+    .form-input:focus,.form-select:focus { outline:none; border-color:#F97316; box-shadow:0 0 0 3px rgba(249,115,22,.15); }
+  </style>
+</head>
+
+<body class="min-h-screen bg-gradient-to-br from-sunset-50 via-white to-orange-50">
+
+  <!-- ═══ Navbar（sticky 固定頂部）═══ -->
+  <nav class="bg-gradient-to-r from-sunset-700 via-sunset-600 to-amber-600 shadow-lg sticky top-0 z-40">
+    <div class="max-w-screen-2xl mx-auto px-6 py-4 flex items-center justify-between">
+      <div class="flex items-center gap-3">
+        <div class="w-10 h-10 rounded-xl bg-white/20 flex items-center justify-center">
+          <svg class="w-6 h-6 text-white" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6m6 0h6m-6 0V9a2 2 0 012-2h2a2 2 0 012 2v10m6 0v-4a2 2 0 00-2-2h-2a2 2 0 00-2 2v4"/>
+          </svg>
+        </div>
+        <span class="text-white text-xl font-bold tracking-wide">DPM 違約預測系統</span>
+      </div>
+      <span class="text-sunset-200 text-sm hidden sm:block">Default Prediction Model</span>
+    </div>
+  </nav>
+
+  <main class="max-w-screen-2xl mx-auto px-4 sm:px-6 py-8">
+
+    <!-- ════════════════════════════════════════════════════════
+         Option 2: 左右並排佈局（左＝輸入，右＝儀表板）
+         ════════════════════════════════════════════════════════ -->
+    <div class="flex flex-col lg:flex-row gap-6">
+
+      <!-- ═══ 左側：輸入表單 ═══ -->
+      <div class="lg:w-[55%] xl:w-[50%] flex-shrink-0">
+        <form method="post" id="predictionForm" novalidate>
+          {% csrf_token %}
+          <div class="bg-white rounded-2xl shadow-xl border border-sunset-100 overflow-hidden">
+            <div class="bg-gradient-to-r from-sunset-600 to-amber-500 px-6 py-4">
+              <h2 class="text-white text-lg font-semibold">輸入客戶資料</h2>
+              <p class="text-sunset-100 text-sm mt-1">填寫欄位後點擊「開始預測」，右方即時顯示結果。</p>
+            </div>
+
+            <div class="p-6 space-y-6">
+
+              <!-- ── 1. 基本資料 ── -->
+              <fieldset>
+                <legend class="text-sunset-800 font-semibold text-sm mb-3 flex items-center gap-2">
+                  <span class="w-6 h-6 rounded-md bg-sunset-100 text-sunset-600 flex items-center justify-center text-xs font-bold">1</span>
+                  基本資料
+                </legend>
+                <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                  {% for field in form %}
+                    {% if field.name == 'education' or field.name == 'month_salary' or field.name == 'job_tenure' %}
+                    <div>
+                      <label for="{{ field.id_for_label }}" class="block text-xs font-medium text-gray-600 mb-1">{{ field.label }}</label>
+                      {{ field }}
+                      {% if field.help_text %}<p class="text-gray-400 text-xs mt-0.5">{{ field.help_text }}</p>{% endif %}
+                      {% if field.errors %}<p class="text-red-500 text-xs mt-0.5">{{ field.errors.0 }}</p>{% endif %}
+                    </div>
+                    {% endif %}
+                  {% endfor %}
+                </div>
+              </fieldset>
+
+              <!-- ── 2. 居住與職業 ── -->
+              <fieldset>
+                <legend class="text-sunset-800 font-semibold text-sm mb-3 flex items-center gap-2">
+                  <span class="w-6 h-6 rounded-md bg-sunset-100 text-sunset-600 flex items-center justify-center text-xs font-bold">2</span>
+                  居住與職業
+                </legend>
+                <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                  {% for field in form %}
+                    {% if field.name == 'residence_status' or field.name == 'main_business' or field.name == 'product' or field.name == 'post_code_permanent' or field.name == 'post_code_residential' %}
+                    <div>
+                      <label for="{{ field.id_for_label }}" class="block text-xs font-medium text-gray-600 mb-1">{{ field.label }}</label>
+                      {{ field }}
+                      {% if field.help_text %}<p class="text-gray-400 text-xs mt-0.5">{{ field.help_text }}</p>{% endif %}
+                      {% if field.errors %}<p class="text-red-500 text-xs mt-0.5">{{ field.errors.0 }}</p>{% endif %}
+                    </div>
+                    {% endif %}
+                  {% endfor %}
+                </div>
+              </fieldset>
+
+              <!-- ── 3. 貸款資訊 ── -->
+              <fieldset>
+                <legend class="text-sunset-800 font-semibold text-sm mb-3 flex items-center gap-2">
+                  <span class="w-6 h-6 rounded-md bg-sunset-100 text-sunset-600 flex items-center justify-center text-xs font-bold">3</span>
+                  貸款資訊
+                </legend>
+                <div class="grid grid-cols-2 sm:grid-cols-4 gap-4">
+                  {% for field in form %}
+                    {% if field.name == 'loan_term' or field.name == 'paid_installments' or field.name == 'debt_to_income_ratio' or field.name == 'payment_to_income_ratio' %}
+                    <div>
+                      <label for="{{ field.id_for_label }}" class="block text-xs font-medium text-gray-600 mb-1">{{ field.label }}</label>
+                      {{ field }}
+                      {% if field.help_text %}<p class="text-gray-400 text-xs mt-0.5">{{ field.help_text }}</p>{% endif %}
+                      {% if field.errors %}<p class="text-red-500 text-xs mt-0.5">{{ field.errors.0 }}</p>{% endif %}
+                    </div>
+                    {% endif %}
+                  {% endfor %}
+                </div>
+              </fieldset>
+
+              <!-- ── 4. 逾期紀錄 ── -->
+              <fieldset>
+                <legend class="text-sunset-800 font-semibold text-sm mb-3 flex items-center gap-2">
+                  <span class="w-6 h-6 rounded-md bg-sunset-100 text-sunset-600 flex items-center justify-center text-xs font-bold">4</span>
+                  逾期紀錄
+                </legend>
+                <div class="grid grid-cols-2 sm:grid-cols-4 gap-4">
+                  {% for field in form %}
+                    {% if 'overdue' in field.name %}
+                    <div>
+                      <label for="{{ field.id_for_label }}" class="block text-xs font-medium text-gray-600 mb-1">{{ field.label }}</label>
+                      {{ field }}
+                      {% if field.help_text %}<p class="text-gray-400 text-xs mt-0.5">{{ field.help_text }}</p>{% endif %}
+                      {% if field.errors %}<p class="text-red-500 text-xs mt-0.5">{{ field.errors.0 }}</p>{% endif %}
+                    </div>
+                    {% endif %}
+                  {% endfor %}
+                </div>
+              </fieldset>
+
+            </div>
+
+            <!-- 按鈕列：開始預測 ＋ 重新輸入 ＋ 上傳報表 -->
+            <div class="px-6 pb-6 flex flex-wrap items-center gap-3">
+              <button type="submit" id="submitBtn"
+                      class="px-8 py-2.5 bg-gradient-to-r from-sunset-600 to-amber-500 hover:from-sunset-700 hover:to-amber-600 text-white font-semibold rounded-xl shadow-lg shadow-sunset-200 transition-all duration-200 transform hover:scale-[1.02] active:scale-95 flex items-center gap-2 text-sm">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z"/>
+                </svg>
+                開始預測
+              </button>
+              <button type="reset" id="resetBtn"
+                      class="px-6 py-2.5 bg-gray-100 hover:bg-gray-200 text-gray-600 font-medium rounded-xl transition-colors text-sm flex items-center gap-2">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
+                </svg>
+                重新輸入
+              </button>
+              <button type="button" id="uploadBtn"
+                      class="px-6 py-2.5 bg-white border border-sunset-300 hover:bg-sunset-50 text-sunset-700 font-medium rounded-xl transition-colors text-sm flex items-center gap-2">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"/>
+                </svg>
+                上傳報表（批次預測）
+              </button>
+            </div>
+          </div>
+        </form>
+      </div>
+
+      <!-- ═══ 右側：儀表板結果 ═══ -->
+      <div class="lg:w-[45%] xl:w-[50%] flex-shrink-0">
+
+        {% if result %}
+        <!-- 有結果時顯示儀表板 -->
+        <div class="result-section space-y-5 lg:sticky lg:top-8">
+
+          <!-- 違約機率 Gauge -->
+          <div class="bg-white rounded-2xl shadow-xl border border-sunset-100 p-6 flex flex-col items-center">
+            <h3 class="text-sunset-800 font-semibold mb-3">違約機率</h3>
+            <div class="relative" style="width:240px; height:140px;">
+              <canvas id="gaugeChart"></canvas>
+              <div class="absolute inset-x-0 bottom-0 text-center">
+                <span class="text-3xl font-bold text-sunset-700">{{ result.default_probability }}%</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- 風險評等 + 建議行動 -->
+          <div class="grid grid-cols-2 gap-5">
+            <!-- 風險評等 -->
+            <div class="bg-white rounded-2xl shadow-xl border border-sunset-100 p-5">
+              <h3 class="text-sunset-800 font-semibold text-sm mb-3">風險評等</h3>
+              <div class="flex items-center gap-4">
+                <div class="w-16 h-16 rounded-full flex items-center justify-center text-2xl font-black flex-shrink-0
+                  {% if result.risk_color == 'emerald' %}bg-emerald-100 text-emerald-600
+                  {% elif result.risk_color == 'green' %}bg-green-100 text-green-600
+                  {% elif result.risk_color == 'amber' %}bg-amber-100 text-amber-600
+                  {% elif result.risk_color == 'orange' %}bg-orange-100 text-orange-600
+                  {% else %}bg-red-100 text-red-600{% endif %}">
+                  {{ result.risk_grade|first }}
+                </div>
+                <div class="text-left">
+                  <p class="text-gray-700 text-sm font-medium">{{ result.risk_grade }}</p>
+                  <span class="inline-block mt-1 px-3 py-0.5 rounded-full text-xs font-semibold
+                    {% if result.risk_color == 'emerald' %}bg-emerald-100 text-emerald-700
+                    {% elif result.risk_color == 'green' %}bg-green-100 text-green-700
+                    {% elif result.risk_color == 'amber' %}bg-amber-100 text-amber-700
+                    {% elif result.risk_color == 'orange' %}bg-orange-100 text-orange-700
+                    {% else %}bg-red-100 text-red-700{% endif %}">
+                    {{ result.risk_label }}
+                  </span>
+                  <span class="inline-block mt-1 ml-1 px-2 py-0.5 rounded text-xs font-medium bg-gray-100 text-gray-600">{{ result.risk_alert }}</span>
+                </div>
+              </div>
+              <!-- 風險分數 -->
+              <div class="mt-3 pt-3 border-t border-gray-100 text-left">
+                <p class="text-gray-700 text-sm">風險分數：<strong>{{ result.risk_score }}</strong> / 100</p>
+              </div>
+            </div>
+
+            <!-- 建議行動 + 下載 -->
+            <div class="bg-white rounded-2xl shadow-xl border border-sunset-100 p-5 flex flex-col">
+              <h3 class="text-sunset-800 font-semibold text-sm mb-2">建議行動</h3>
+              <p class="text-gray-700 text-sm leading-relaxed flex-1">{{ result.recommendation }}</p>
+              <div class="mt-3 pt-3 border-t border-gray-100 flex flex-wrap gap-2">
+                <a href="{% url 'prediction:download_csv' %}" class="flex items-center gap-1.5 px-3 py-1.5 bg-sunset-50 hover:bg-sunset-100 text-sunset-700 rounded-lg text-xs font-medium transition-colors">
+                  <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M4 16v2a2 2 0 002 2h12a2 2 0 002-2v-2M7 10l5 5 5-5M12 15V3"/></svg>
+                  CSV
+                </a>
+                <a href="{% url 'prediction:download_excel' %}" class="flex items-center gap-1.5 px-3 py-1.5 bg-amber-50 hover:bg-amber-100 text-amber-700 rounded-lg text-xs font-medium transition-colors">
+                  <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M4 16v2a2 2 0 002 2h12a2 2 0 002-2v-2M7 10l5 5 5-5M12 15V3"/></svg>
+                  Excel
+                </a>
+              </div>
+            </div>
+          </div>
+
+          <!-- 評分說明 -->
+          <div class="bg-white rounded-2xl shadow-xl border border-sunset-100 p-5">
+            <h3 class="text-sunset-800 font-semibold text-sm mb-2">評分說明</h3>
+            <p class="text-gray-500 text-xs mb-2">分數 = (1 - 違約機率) &times; 100，分數越高代表越安全。</p>
+            <div class="grid grid-cols-5 gap-2 text-center text-xs">
+              <div class="rounded-lg bg-emerald-50 p-2"><span class="inline-block w-3 h-3 rounded-full bg-emerald-400 mb-1"></span><p class="font-semibold text-emerald-700">A</p><p class="text-gray-500">90–100</p></div>
+              <div class="rounded-lg bg-green-50 p-2"><span class="inline-block w-3 h-3 rounded-full bg-green-400 mb-1"></span><p class="font-semibold text-green-700">B</p><p class="text-gray-500">60–89</p></div>
+              <div class="rounded-lg bg-amber-50 p-2"><span class="inline-block w-3 h-3 rounded-full bg-amber-400 mb-1"></span><p class="font-semibold text-amber-700">C</p><p class="text-gray-500">40–59</p></div>
+              <div class="rounded-lg bg-orange-50 p-2"><span class="inline-block w-3 h-3 rounded-full bg-orange-400 mb-1"></span><p class="font-semibold text-orange-700">D</p><p class="text-gray-500">20–39</p></div>
+              <div class="rounded-lg bg-red-50 p-2"><span class="inline-block w-3 h-3 rounded-full bg-red-400 mb-1"></span><p class="font-semibold text-red-700">E</p><p class="text-gray-500">0–19</p></div>
+            </div>
+          </div>
+
+        </div>
+
+        {% elif batch_summary %}
+        <!-- 批次上傳結果 -->
+        <div class="result-section space-y-5">
+          <div class="bg-white rounded-2xl shadow-xl border border-sunset-100 p-6">
+            <h3 class="text-sunset-800 font-semibold mb-4">批次預測完成</h3>
+            <div class="space-y-3 text-sm">
+              <p class="text-gray-600">檔案：<strong>{{ batch_summary.filename }}</strong></p>
+              <p class="text-gray-600">預測筆數：<strong>{{ batch_summary.total }}</strong> 筆</p>
+              {% if batch_summary.avg_prob %}
+              <p class="text-gray-600">平均違約機率：<strong>{{ batch_summary.avg_prob }}%</strong>（最低 {{ batch_summary.min_prob }}% / 最高 {{ batch_summary.max_prob }}%）</p>
+              {% endif %}
+              {% if batch_summary.grade_counts %}
+              <div class="mt-3">
+                <p class="text-gray-700 font-medium mb-2">風險等級分佈</p>
+                <div class="flex flex-wrap gap-2">
+                  {% for grade, count in batch_summary.grade_counts.items %}
+                  <span class="px-3 py-1 rounded-full text-xs font-semibold bg-gray-100 text-gray-700">{{ grade }}：{{ count }} 筆</span>
+                  {% endfor %}
+                </div>
+              </div>
+              {% endif %}
+            </div>
+            <div class="mt-5 pt-4 border-t border-gray-100">
+              <a href="{% url 'prediction:download_batch_result' %}" class="inline-flex items-center gap-2 px-5 py-2.5 bg-gradient-to-r from-sunset-600 to-amber-500 hover:from-sunset-700 hover:to-amber-600 text-white font-semibold rounded-xl shadow-lg text-sm transition-all">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M4 16v2a2 2 0 002 2h12a2 2 0 002-2v-2M7 10l5 5 5-5M12 15V3"/></svg>
+                下載批次預測結果 Excel
+              </a>
+            </div>
+          </div>
+        </div>
+
+        {% else %}
+        <!-- 尚無結果 — 等待提示 -->
+        <div class="bg-white rounded-2xl shadow-xl border border-sunset-100 p-8 flex flex-col items-center justify-center text-center h-full min-h-[400px]">
+          <div class="w-20 h-20 rounded-full bg-sunset-50 flex items-center justify-center mb-4">
+            <svg class="w-10 h-10 text-sunset-300" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M3 13.125C3 12.504 3.504 12 4.125 12h2.25c.621 0 1.125.504 1.125 1.125v6.75C7.5 20.496 6.996 21 6.375 21h-2.25A1.125 1.125 0 013 19.875v-6.75zM9.75 8.625c0-.621.504-1.125 1.125-1.125h2.25c.621 0 1.125.504 1.125 1.125v11.25c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 01-1.125-1.125V8.625zM16.5 4.125c0-.621.504-1.125 1.125-1.125h2.25C20.496 3 21 3.504 21 4.125v15.75c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 01-1.125-1.125V4.125z"/>
+            </svg>
+          </div>
+          <p class="text-gray-400 text-sm">填寫左側表單並點擊「開始預測」<br>結果將在此即時顯示</p>
+        </div>
+        {% endif %}
+
+      </div>
+    </div>
+
+    <!-- ═══ 錯誤訊息 ═══ -->
+    {% if error_msg %}
+    <div class="mt-6 bg-red-50 border border-red-200 rounded-xl p-5 text-red-700 text-sm">
+      <strong>Error:</strong> {{ error_msg }}
+    </div>
+    {% endif %}
+
+    <!-- ═══ 警告訊息（選填欄位缺少提示）═══ -->
+    {% if warning_msg %}
+    <div class="mt-6 bg-amber-50 border border-amber-200 rounded-xl p-5 text-amber-800 text-sm whitespace-pre-line">
+      {{ warning_msg }}
+    </div>
+    {% endif %}
+
+    <!-- ═══ 輸入資料摘要（全寬，固定在下方）═══ -->
+    {% if result %}
+    <section class="mt-6 result-section">
+      <div class="bg-white rounded-2xl shadow-xl border border-sunset-100 overflow-hidden">
+        <div class="bg-gradient-to-r from-sunset-600 to-amber-500 px-8 py-4">
+          <h3 class="text-white font-semibold">輸入資料摘要</h3>
+        </div>
+        <div class="overflow-x-auto">
+          <table class="w-full">
+            <thead>
+              <tr class="bg-sunset-50">
+                <th class="px-6 py-3 text-left text-xs font-semibold text-sunset-700 uppercase tracking-wider">欄位</th>
+                <th class="px-6 py-3 text-left text-xs font-semibold text-sunset-700 uppercase tracking-wider">數值</th>
+              </tr>
+            </thead>
+            <tbody class="divide-y divide-gray-100">
+              {% for key, value in result.input_summary.items %}
+              <tr class="hover:bg-sunset-50/50 transition-colors">
+                <td class="px-6 py-3 text-sm font-medium text-gray-700">{{ key }}</td>
+                <td class="px-6 py-3 text-sm text-gray-600">{{ value }}</td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+    {% endif %}
+
+  </main>
+
+  <!-- ═══ 上傳報表 Modal ═══ -->
+  <div id="uploadModal" class="hidden fixed inset-0 bg-black/40 backdrop-blur-sm z-50 flex items-center justify-center">
+    <div class="bg-white rounded-2xl shadow-2xl w-full max-w-lg mx-4 overflow-hidden">
+      <div class="bg-gradient-to-r from-sunset-600 to-amber-500 px-6 py-4 flex items-center justify-between">
+        <h3 class="text-white font-semibold">上傳報表 — 批次預測</h3>
+        <button type="button" id="closeModal" class="text-white/70 hover:text-white transition-colors">
+          <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>
+        </button>
+      </div>
+      <form method="post" enctype="multipart/form-data" action="{% url 'prediction:upload_predict' %}" id="uploadForm">
+        {% csrf_token %}
+        <div class="p-6 space-y-4">
+          <p class="text-gray-600 text-sm">上傳包含多位客戶資料的 Excel / CSV 檔案，系統將批次執行預測並產出結果。</p>
+
+          <!-- 拖曳上傳區 -->
+          <div id="dropZone" class="border-2 border-dashed border-sunset-200 rounded-xl p-8 text-center hover:border-sunset-400 transition-colors cursor-pointer">
+            <svg class="w-10 h-10 text-sunset-300 mx-auto mb-3" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5m-13.5-9L12 3m0 0l4.5 4.5M12 3v13.5"/>
+            </svg>
+            <p class="text-gray-500 text-sm">拖曳檔案到此處，或 <span class="text-sunset-600 font-medium">點擊選擇檔案</span></p>
+            <p class="text-gray-400 text-xs mt-1">支援 .xlsx / .xls / .csv</p>
+            <input type="file" name="file" id="fileInput" accept=".xlsx,.xls,.csv" class="hidden" />
+            <p id="fileName" class="text-sunset-600 text-sm font-medium mt-2 hidden"></p>
+          </div>
+
+          <!-- 欄位說明 -->
+          <details class="bg-gray-50 rounded-lg">
+            <summary class="px-4 py-2.5 text-sm font-medium text-gray-700 cursor-pointer hover:text-sunset-700">欄位說明（點擊展開）</summary>
+            <div class="px-4 pb-4 text-xs text-gray-500 space-y-2">
+              <p class="font-semibold text-red-600 mt-1">必填欄位（缺少將無法預測）：</p>
+              <table class="w-full mt-1">
+                <tr class="border-b border-gray-100"><td class="py-1 font-mono text-sunset-700">education</td><td>教育程度</td><td class="text-red-500 font-semibold">必填</td></tr>
+                <tr class="border-b border-gray-100"><td class="py-1 font-mono text-sunset-700">month salary</td><td>月薪（元）</td><td class="text-red-500 font-semibold">必填</td></tr>
+                <tr class="border-b border-gray-100"><td class="py-1 font-mono text-sunset-700">job tenure</td><td>工作年資（年）</td><td class="text-red-500 font-semibold">必填</td></tr>
+                <tr class="border-b border-gray-100"><td class="py-1 font-mono text-sunset-700">residence status</td><td>居住狀態</td><td class="text-red-500 font-semibold">必填</td></tr>
+                <tr class="border-b border-gray-100"><td class="py-1 font-mono text-sunset-700">main business</td><td>行業別</td><td class="text-red-500 font-semibold">必填</td></tr>
+                <tr class="border-b border-gray-100"><td class="py-1 font-mono text-sunset-700">product</td><td>產品類型</td><td class="text-red-500 font-semibold">必填</td></tr>
+                <tr class="border-b border-gray-100"><td class="py-1 font-mono text-sunset-700">loan term</td><td>貸款期數（月）</td><td class="text-red-500 font-semibold">必填</td></tr>
+                <tr class="border-b border-gray-100"><td class="py-1 font-mono text-sunset-700">paid installments</td><td>已繳期數</td><td class="text-red-500 font-semibold">必填</td></tr>
+                <tr class="border-b border-gray-100"><td class="py-1 font-mono text-sunset-700">post code of permanent address</td><td>戶籍郵遞區號</td><td class="text-red-500 font-semibold">必填</td></tr>
+                <tr class="border-b border-gray-100"><td class="py-1 font-mono text-sunset-700">post code of residential address</td><td>居住郵遞區號</td><td class="text-red-500 font-semibold">必填</td></tr>
+              </table>
+              <p class="font-semibold text-amber-600 mt-3">選填欄位（缺少時預設為 0，但會影響準確度）：</p>
+              <table class="w-full mt-1">
+                <tr class="border-b border-gray-100"><td class="py-1 font-mono text-sunset-700">debt_to_income_ratio</td><td>負債收入比（0-1）</td><td class="text-amber-600">選填</td></tr>
+                <tr class="border-b border-gray-100"><td class="py-1 font-mono text-sunset-700">payment_to_income_ratio</td><td>還款收入比（0-1）</td><td class="text-amber-600">選填</td></tr>
+                <tr class="border-b border-gray-100"><td class="py-1 font-mono text-sunset-700">number of overdue before the first month</td><td>第1月前逾期次數</td><td class="text-amber-600">選填</td></tr>
+                <tr class="border-b border-gray-100"><td class="py-1 font-mono text-sunset-700">number of overdue in the first half of the first month</td><td>第1月上半逾期</td><td class="text-amber-600">選填</td></tr>
+                <tr class="border-b border-gray-100"><td class="py-1 font-mono text-sunset-700">number of overdue in the second half of the first month</td><td>第1月下半逾期</td><td class="text-amber-600">選填</td></tr>
+                <tr class="border-b border-gray-100"><td class="py-1 font-mono text-sunset-700">number of overdue in the second month</td><td>第2月逾期次數</td><td class="text-amber-600">選填</td></tr>
+                <tr class="border-b border-gray-100"><td class="py-1 font-mono text-sunset-700">number of overdue in the third month</td><td>第3月逾期次數</td><td class="text-amber-600">選填</td></tr>
+                <tr class="border-b border-gray-100"><td class="py-1 font-mono text-sunset-700">number of overdue in the fourth month</td><td>第4月逾期次數</td><td class="text-amber-600">選填</td></tr>
+                <tr class="border-b border-gray-100"><td class="py-1 font-mono text-sunset-700">number of overdue in the fifth month</td><td>第5月逾期次數</td><td class="text-amber-600">選填</td></tr>
+                <tr><td class="py-1 font-mono text-sunset-700">number of overdue in the sixth month</td><td>第6月逾期次數</td><td class="text-amber-600">選填</td></tr>
+              </table>
+              <p class="mt-2 text-gray-400">提示：可下載 <code class="bg-gray-200 px-1 rounded">Prediction data/new_client_template.xlsx</code> 做為填寫範本。</p>
+              <p class="text-amber-600">逾期欄位為 SHAP 特徵重要性最高的來源（合計貢獻 &gt;80%），回頭客強烈建議提供。新客戶可省略（預設 0）。</p>
+            </div>
+          </details>
+        </div>
+
+        <div class="px-6 pb-6 flex justify-end gap-3">
+          <button type="button" id="cancelModal" class="px-5 py-2 text-gray-600 bg-gray-100 hover:bg-gray-200 rounded-xl text-sm font-medium transition-colors">取消</button>
+          <button type="submit" id="uploadSubmitBtn" disabled class="px-5 py-2 bg-gradient-to-r from-sunset-600 to-amber-500 text-white rounded-xl text-sm font-semibold shadow-lg disabled:opacity-40 disabled:cursor-not-allowed transition-all">
+            開始批次預測
+          </button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- ═══ Loading overlay ═══ -->
+  <div id="loadingOverlay" class="hidden fixed inset-0 bg-black/30 backdrop-blur-sm z-50 flex items-center justify-center">
+    <div class="bg-white rounded-2xl p-8 shadow-2xl flex flex-col items-center gap-4">
+      <div class="spinner"></div>
+      <p class="text-sunset-700 font-medium">模型預測中，請稍候...</p>
+    </div>
+  </div>
+
+  <!-- Footer -->
+  <footer class="text-center py-6 text-sm text-gray-400">
+    &copy; 2026 DPM — Default Prediction Model. YC Intelligence. All rights reserved.
+  </footer>
+
+  <!-- ═══ Scripts ═══ -->
+  <script>
+    // Loading spinner
+    document.getElementById('predictionForm').addEventListener('submit', function () {
+      document.getElementById('loadingOverlay').classList.remove('hidden');
+    });
+    document.getElementById('uploadForm').addEventListener('submit', function () {
+      document.getElementById('uploadModal').classList.add('hidden');
+      document.getElementById('loadingOverlay').classList.remove('hidden');
+    });
+
+    // Reset button — also clear result panel (reload page)
+    document.getElementById('resetBtn').addEventListener('click', function () {
+      window.location.href = '/';
+    });
+
+    // Upload modal
+    const modal = document.getElementById('uploadModal');
+    const dropZone = document.getElementById('dropZone');
+    const fileInput = document.getElementById('fileInput');
+    const fileNameEl = document.getElementById('fileName');
+    const uploadSubmitBtn = document.getElementById('uploadSubmitBtn');
+
+    document.getElementById('uploadBtn').addEventListener('click', () => modal.classList.remove('hidden'));
+    document.getElementById('closeModal').addEventListener('click', () => modal.classList.add('hidden'));
+    document.getElementById('cancelModal').addEventListener('click', () => modal.classList.add('hidden'));
+    modal.addEventListener('click', (e) => { if (e.target === modal) modal.classList.add('hidden'); });
+
+    dropZone.addEventListener('click', () => fileInput.click());
+    dropZone.addEventListener('dragover', (e) => { e.preventDefault(); dropZone.classList.add('border-sunset-400', 'bg-sunset-50'); });
+    dropZone.addEventListener('dragleave', () => { dropZone.classList.remove('border-sunset-400', 'bg-sunset-50'); });
+    dropZone.addEventListener('drop', (e) => {
+      e.preventDefault();
+      dropZone.classList.remove('border-sunset-400', 'bg-sunset-50');
+      if (e.dataTransfer.files.length) { fileInput.files = e.dataTransfer.files; showFileName(); }
+    });
+    fileInput.addEventListener('change', showFileName);
+
+    function showFileName() {
+      if (fileInput.files.length) {
+        fileNameEl.textContent = fileInput.files[0].name;
+        fileNameEl.classList.remove('hidden');
+        uploadSubmitBtn.disabled = false;
+      }
+    }
+
+    // Gauge chart
+    {% if result %}
+    (function () {
+      const prob = {{ result.default_probability }};
+      const ctx = document.getElementById('gaugeChart').getContext('2d');
+      new Chart(ctx, {
+        type: 'doughnut',
+        data: { datasets: [{ data: [prob, 100 - prob], backgroundColor: [prob >= 60 ? '#EF4444' : prob >= 40 ? '#F59E0B' : '#10B981', '#F3F4F6'], borderWidth: 0, circumference: 180, rotation: 270 }] },
+        options: { responsive: true, maintainAspectRatio: false, cutout: '75%', plugins: { legend: { display: false }, tooltip: { enabled: false } } }
+      });
+    })();
+    {% endif %}
+  </script>
+
+</body>
+</html>
+
+<!-- ═══════════════════════════════════════════════════════════════
+     OPTION 1（上下佈局，已註解）
+     若要切回，將上方整個 <body>...</body> 內容替換為以下：
+     ═══════════════════════════════════════════════════════════════
+
+  <body class="min-h-screen bg-gradient-to-br from-sunset-50 via-white to-orange-50">
+    <nav>... (同上 navbar) ...</nav>
+    <main class="max-w-7xl mx-auto px-4 sm:px-6 py-10">
+
+      [輸入表單 — 全寬]
+      <form method="post" id="predictionForm" novalidate>
+        ... (同 Option 2 左側表單內容) ...
+      </form>
+
+      [結果區 — 全寬三欄]
+      {% if result %}
+      <section class="mt-10 result-section space-y-6">
+        <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+          [Gauge Card] [Risk Grade Card] [Recommendation Card]
+        </div>
+        [Summary Table — 全寬]
+      </section>
+      {% endif %}
+
+    </main>
+  </body>
+
+  ═══════════════════════════════════════════════════════════════ -->
