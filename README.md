@@ -1,3 +1,12 @@
+---
+title: YC Default Predictor
+emoji: 📊
+colorFrom: red
+colorTo: yellow
+sdk: docker
+pinned: false
+---
+
 # DPM (Default Prediction Model) for Existing Clients
 
 A comprehensive machine learning pipeline for predicting default risk of existing clients who have already been lent money, using XGBoost, LightGBM, and CatBoost models.
