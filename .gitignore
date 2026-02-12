@@ -52,13 +52,19 @@ wandb/
 yuczhen29-ccu/
 **/yuczhen29-ccu/
 
-# Models
-models/
-*.pkl
+# Models (general)
 *.joblib
 *.h5
 *.pt
 *.pth
+
+# Allow Train/models/ for HF deployment (tracked via LFS)
+!Train/models/
+!Train/models/*.pkl
+!Train/models/*.json
+
+# Allow Prediction source samples
+!Prediction/Source/*.xlsx
 
 # Logs
 *.log
