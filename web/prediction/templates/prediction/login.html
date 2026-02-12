@@ -79,6 +79,7 @@
 
       <form method="post" class="p-6 space-y-5">
         {% csrf_token %}
+        <input type="hidden" name="lang" id="langInput" value="zh" />
 
         {% if error %}
         <div class="bg-red-50 border border-red-200 rounded-xl p-4 text-red-700 text-sm flex items-center gap-2">
@@ -135,6 +136,7 @@
     function applyLang(lang) {
       currentLang = lang;
       localStorage.setItem("dpm_lang", lang);
+      document.getElementById("langInput").value = lang;
       document.getElementById("langLabel").textContent = lang === "zh" ? "EN" : "中";
       document.querySelectorAll("[data-i18n]").forEach(el => {
         const key = el.getAttribute("data-i18n");

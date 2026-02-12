@@ -57,11 +57,12 @@ MAIN_BUSINESS_CHOICES = [
 
 PRODUCT_CHOICES = [
     ("", "-- 請選擇 --"),
-    ("商品融資", "商品融資"),
+    # ("商品融資", "商品融資"),
     ("瘦身美容", "瘦身美容"),
     ("3C家電", "3C家電"),
     ("個人用品", "個人用品"),
-    ("婚友聯誼", "婚友聯誼"),
+    # ("婚友聯誼", "婚友聯誼"),
+    ("其他", "其他"),
 ]
 
 
@@ -97,7 +98,7 @@ class PredictionForm(forms.Form):
         widget=forms.Select(attrs={"class": "form-select"}),
     )
     product = forms.ChoiceField(
-        label="產品類型",
+        label="借款目的",
         choices=PRODUCT_CHOICES,
         widget=forms.Select(attrs={"class": "form-select"}),
     )

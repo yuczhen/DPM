@@ -79,23 +79,66 @@ def _form_to_dataframe(cleaned_data: dict) -> pd.DataFrame:
 # ─────────────────────────────────────────────────────────────
 # 模型預測
 # ─────────────────────────────────────────────────────────────
-def predict_model(cleaned_data: dict) -> dict:
+NTD_TO_USD = 0.031  # approximate NTD→USD conversion rate
+
+# ─────────────────────────────────────────────────────────────
+# English → Chinese translation for uploaded batch data
+# ─────────────────────────────────────────────────────────────
+EN_TO_ZH = {
+    # education
+    "Grad+": "研究所以上", "Master": "碩士", "College/Univ": "專科/大學",
+    "University": "大學", "College": "專科", "HS/Voc": "高中/職",
+    "High School": "高中", "Elementary": "小學", "Other": "其他",
+    # residence status
+    "Owned": "自有", "Rented": "租屋", "Spouse": "配偶",
+    "Family": "親屬", "Dormitory": "宿舍",
+    # main business
+    "Manufacturing": "製造業", "Services": "服務業", "Commerce": "商業",
+    "Tech": "科技業", "Finance": "金融業", "Insurance": "保險業",
+    "Securities": "證券及期貨業", "Gov/Education": "公教人員", "Military": "軍人",
+    "F&B": "餐飲業", "Transport": "運輸業", "Construction": "營造業",
+    "Real Estate": "不動產業", "Warehousing": "倉儲業", "Telecom": "通信業",
+    "Utilities": "水電燃氣業", "Agriculture": "農牧林漁", "Fishery": "漁業",
+    "Mining": "礦業及土石採取業", "Professional": "專業人士", "Freelance": "自由業",
+    "E-commerce": "網拍業", "Student": "學生", "Homemaker": "家管",
+    "Social/Personal": "社會團體即個人服務",
+    # product
+    "Beauty": "瘦身美容", "3C/Appliance": "3C家電", "Personal": "個人用品",
+}
+
+# Chinese → English translation for model output values
+ZH_TO_EN_GRADE = {
+    "A (優良)": "A (Excellent)", "B (中等)": "B (Moderate)",
+    "C (警戒)": "C (Warning)", "D (不良)": "D (Poor)", "E (危險)": "E (Critical)",
+}
+ZH_TO_EN_ACTION = {
+    "正常監控": "Normal Monitoring", "關注名單": "Watch List",
+    "早期預警": "Early Warning", "加強監控": "Enhanced Monitoring",
+    "惡化警示": "Deterioration Alert", "立即介入": "Immediate Intervention",
+    "強制催收": "Forced Collection", "加強監控+早期預警": "Enhanced Monitoring + Early Warning",
+    "加強監控/催收準備": "Enhanced Monitoring / Collection Prep",
+    "立即催收": "Immediate Collection",
+    "立即介入/催收準備": "Immediate Intervention / Collection Prep",
+}
+# Columns in uploaded data that may contain English categorical values
+EN_CATEGORICAL_COLS = ["education", "residence status", "main business", "product"]
+# Reverse mapping: Chinese → English (for translating form values in output)
+ZH_TO_EN = {v: k for k, v in EN_TO_ZH.items()}
+
+
+def predict_model(cleaned_data: dict, lang: str = "zh") -> dict:
     """
     接收表單清洗後的資料，呼叫真實 DPMPredictor 回傳預測結果。
-
-    Returns:
-        {
-            "default_probability": float,   # 0‑100
-            "risk_score": float,            # 0‑100
-            "risk_grade": str,              # A (優良) / B (中等) / ...
-            "risk_label": str,              # 人類可讀短標籤
-            "risk_color": str,              # Tailwind 色系
-            "risk_alert": str,              # LOW RISK / HIGH RISK / ...
-            "recommendation": str,          # 建議行動
-            "input_summary": dict,          # 原始輸入摘要
-        }
+    lang: "zh" or "en" — controls output language and currency.
     """
     predictor = _get_predictor()
+
+    # Convert USD → NTD for English users (model expects NTD)
+    original_salary = cleaned_data.get("month_salary", 0)
+    if lang == "en" and "month_salary" in cleaned_data:
+        cleaned_data = dict(cleaned_data)  # avoid mutating original
+        cleaned_data["month_salary"] = original_salary / NTD_TO_USD
+
     df = _form_to_dataframe(cleaned_data)
 
     # 呼叫模型
@@ -110,34 +153,64 @@ def predict_model(cleaned_data: dict) -> dict:
 
     # 風險等級 → 短標籤 + 顏色
     grade_letter = risk_grade[0] if risk_grade else "C"
-    label_map = {"A": "極低風險", "B": "中等風險", "C": "高風險", "D": "極高風險", "E": "危急風險"}
     color_map = {"A": "emerald", "B": "green", "C": "amber", "D": "orange", "E": "red"}
-    risk_label = label_map.get(grade_letter, "未知")
     risk_color = color_map.get(grade_letter, "gray")
 
-    # 輸入摘要
-    input_summary = {
-        "教育程度": cleaned_data.get("education", ""),
-        "月薪": f'{cleaned_data.get("month_salary", 0):,.0f} 元',
-        "工作年資": f'{cleaned_data.get("job_tenure", 0)} 年',
-        "居住狀態": cleaned_data.get("residence_status", ""),
-        "行業別": cleaned_data.get("main_business", ""),
-        "產品類型": cleaned_data.get("product", ""),
-        "貸款期數": f'{cleaned_data.get("loan_term", 0)} 期',
-        "已繳期數": f'{cleaned_data.get("paid_installments", 0)} 期',
-        "負債收入比": f'{cleaned_data.get("debt_to_income_ratio", 0)}',
-        "還款收入比": f'{cleaned_data.get("payment_to_income_ratio", 0)}',
-        "戶籍郵遞區號": str(cleaned_data.get("post_code_permanent", "")),
-        "居住郵遞區號": str(cleaned_data.get("post_code_residential", "")),
-        "逾期總次數": str(sum(
-            cleaned_data.get(f, 0) for f in [
-                "overdue_before_first", "overdue_first_half",
-                "overdue_first_second_half", "overdue_month_2",
-                "overdue_month_3", "overdue_month_4",
-                "overdue_month_5", "overdue_month_6",
-            ]
-        )),
-    }
+    if lang == "en":
+        label_map = {"A": "Very Low Risk", "B": "Moderate Risk", "C": "High Risk", "D": "Very High Risk", "E": "Critical Risk"}
+        risk_label = label_map.get(grade_letter, "Unknown")
+        risk_grade = ZH_TO_EN_GRADE.get(risk_grade, risk_grade)
+        recommendation = ZH_TO_EN_ACTION.get(recommendation, recommendation)
+
+        _t = lambda v: ZH_TO_EN.get(str(v), v)  # translate ZH→EN
+        input_summary = {
+            "Education": _t(cleaned_data.get("education", "")),
+            "Monthly Salary": f'${original_salary:,.0f} USD',
+            "Job Tenure": f'{cleaned_data.get("job_tenure", 0)} years',
+            "Residence Status": _t(cleaned_data.get("residence_status", "")),
+            "Industry": _t(cleaned_data.get("main_business", "")),
+            "Loan Purpose": _t(cleaned_data.get("product", "")),
+            "Loan Term": f'{cleaned_data.get("loan_term", 0)} months',
+            "Paid Installments": f'{cleaned_data.get("paid_installments", 0)} months',
+            "Debt-to-Income Ratio": f'{cleaned_data.get("debt_to_income_ratio", 0)}',
+            "Payment-to-Income Ratio": f'{cleaned_data.get("payment_to_income_ratio", 0)}',
+            "Permanent Address Postal Code": str(cleaned_data.get("post_code_permanent", "")),
+            "Residential Address Postal Code": str(cleaned_data.get("post_code_residential", "")),
+            "Total Overdue Count": str(sum(
+                cleaned_data.get(f, 0) for f in [
+                    "overdue_before_first", "overdue_first_half",
+                    "overdue_first_second_half", "overdue_month_2",
+                    "overdue_month_3", "overdue_month_4",
+                    "overdue_month_5", "overdue_month_6",
+                ]
+            )),
+        }
+    else:
+        label_map = {"A": "極低風險", "B": "中等風險", "C": "高風險", "D": "極高風險", "E": "危急風險"}
+        risk_label = label_map.get(grade_letter, "未知")
+
+        input_summary = {
+            "教育程度": cleaned_data.get("education", ""),
+            "月薪": f'{cleaned_data.get("month_salary", 0):,.0f} 元',
+            "工作年資": f'{cleaned_data.get("job_tenure", 0)} 年',
+            "居住狀態": cleaned_data.get("residence_status", ""),
+            "行業別": cleaned_data.get("main_business", ""),
+            "借款目的": cleaned_data.get("product", ""),
+            "貸款期數": f'{cleaned_data.get("loan_term", 0)} 期',
+            "已繳期數": f'{cleaned_data.get("paid_installments", 0)} 期',
+            "負債收入比": f'{cleaned_data.get("debt_to_income_ratio", 0)}',
+            "還款收入比": f'{cleaned_data.get("payment_to_income_ratio", 0)}',
+            "戶籍郵遞區號": str(cleaned_data.get("post_code_permanent", "")),
+            "居住郵遞區號": str(cleaned_data.get("post_code_residential", "")),
+            "逾期總次數": str(sum(
+                cleaned_data.get(f, 0) for f in [
+                    "overdue_before_first", "overdue_first_half",
+                    "overdue_first_second_half", "overdue_month_2",
+                    "overdue_month_3", "overdue_month_4",
+                    "overdue_month_5", "overdue_month_6",
+                ]
+            )),
+        }
 
     return {
         "default_probability": round(prob, 2),
@@ -165,6 +238,7 @@ def login_view(request):
         access_pw = getattr(settings, "DPM_ACCESS_PASSWORD", "dpm2026")
         if password == access_pw:
             request.session["authenticated"] = True
+            request.session["lang"] = request.POST.get("lang", "zh")
             return redirect("prediction:prediction_page")
         error = True
 
@@ -185,11 +259,13 @@ def prediction_page(request):
     result = None
     error_msg = None
 
+    lang = request.session.get("lang", "zh")
+
     if request.method == "POST":
         form = PredictionForm(request.POST)
         if form.is_valid():
             try:
-                result = predict_model(form.cleaned_data)
+                result = predict_model(form.cleaned_data, lang=lang)
                 # 存入 session 以供下載使用
                 request.session["last_prediction"] = {
                     "result": result,
@@ -205,6 +281,7 @@ def prediction_page(request):
         "result": result,
         "result_json": json.dumps(result, ensure_ascii=False) if result else "null",
         "error_msg": error_msg,
+        "session_lang": request.session.get("lang", "zh"),
     })
 
 
@@ -290,6 +367,7 @@ def upload_predict(request):
                 f"{missing_str}\n\n"
                 f"檔案現有欄位：{', '.join(df.columns.tolist())}"
             ),
+            "session_lang": request.session.get("lang", "zh"),
         })
 
     # 2) 選填欄位：缺少 → 填預設值 + 記錄警告
@@ -307,6 +385,16 @@ def upload_predict(request):
             "若為回頭客，缺少逾期欄位將顯著影響預測準確度。\n\n"
             + "\n".join(warning_lines)
         )
+
+    # Translate English categorical values → Chinese for model processing
+    lang = request.session.get("lang", "zh")
+    for col in EN_CATEGORICAL_COLS:
+        if col in df.columns:
+            df[col] = df[col].map(lambda v: EN_TO_ZH.get(str(v).strip(), v) if pd.notna(v) else v)
+
+    # Convert USD → NTD for English users (model expects NTD)
+    if lang == "en" and "month salary" in df.columns:
+        df["month salary"] = (df["month salary"] / NTD_TO_USD).round(0).astype(int)
 
     predictor = _get_predictor()
 
@@ -327,6 +415,7 @@ def upload_predict(request):
             "form": PredictionForm(),
             "result_json": "null",
             "error_msg": f"批次預測失敗：{e}",
+            "session_lang": request.session.get("lang", "zh"),
         })
     finally:
         os.chdir(original_cwd)
@@ -339,6 +428,24 @@ def upload_predict(request):
     # 移除內部技術欄位（業務使用者不需要看）
     drop_cols = ["predicted_default", "predicted_default_optimal", "threshold_difference"]
     result_df = result_df.drop(columns=[c for c in drop_cols if c in result_df.columns])
+
+    # Translate model output values to English if session lang is "en"
+    lang = request.session.get("lang", "zh")
+    if lang == "en":
+        if "risk_grade" in result_df.columns:
+            result_df["risk_grade"] = result_df["risk_grade"].map(
+                lambda v: ZH_TO_EN_GRADE.get(str(v), v))
+        if "risk_action" in result_df.columns:
+            result_df["risk_action"] = result_df["risk_action"].map(
+                lambda v: ZH_TO_EN_ACTION.get(str(v), v))
+        if "risk_action_optimal" in result_df.columns:
+            result_df["risk_action_optimal"] = result_df["risk_action_optimal"].map(
+                lambda v: ZH_TO_EN_ACTION.get(str(v), v))
+        # Also translate categorical input columns back to English for the output
+        for col in EN_CATEGORICAL_COLS:
+            if col in result_df.columns:
+                result_df[col] = result_df[col].map(
+                    lambda v: ZH_TO_EN.get(str(v), v) if pd.notna(v) else v)
 
     # 存入 session 供下載
     batch_records = result_df.to_dict(orient="records")
@@ -368,6 +475,7 @@ def upload_predict(request):
         "batch_summary": summary,
         "result_json": "null",
         "warning_msg": warning_msg,
+        "session_lang": request.session.get("lang", "zh"),
     })
 
 
@@ -382,22 +490,47 @@ def download_batch_result(request):
 
     result_df = pd.DataFrame(batch["records"], columns=batch["columns"])
     timestamp = batch["timestamp"].replace(":", "").replace(" ", "_")
+    lang = request.session.get("lang", "zh")
 
-    # 欄位中文名對照
-    COL_LABELS = {
-        "name": "姓名",
-        "default_probability": "違約機率 (%)",
-        "risk_score": "風險分數",
-        "risk_grade": "風險等級",
-        "risk_action": "建議行動",
-        "risk_action_optimal": "建議行動（最佳）",
-        "risk_alert": "風險警示",
-    }
+    # 欄位名稱對照
+    if lang == "en":
+        COL_LABELS = {
+            "name": "Name",
+            "education": "Education",
+            "month salary": "Monthly Salary",
+            "job tenure": "Job Tenure (yrs)",
+            "residence status": "Residence Status",
+            "main business": "Industry",
+            "product": "Loan Purpose",
+            "loan term": "Loan Term (months)",
+            "paid installments": "Paid Installments",
+            "post code of permanent address": "Perm. Address Postal Code",
+            "post code of residential address": "Res. Address Postal Code",
+            "debt_to_income_ratio": "Debt-to-Income Ratio",
+            "payment_to_income_ratio": "Payment-to-Income Ratio",
+            "default_probability": "Default Probability (%)",
+            "risk_score": "Risk Score",
+            "risk_grade": "Risk Grade",
+            "risk_action": "Recommendation",
+            "risk_action_optimal": "Recommendation (Optimal)",
+            "risk_alert": "Risk Alert",
+        }
+    else:
+        COL_LABELS = {
+            "name": "姓名",
+            "default_probability": "違約機率 (%)",
+            "risk_score": "風險分數",
+            "risk_grade": "風險等級",
+            "risk_action": "建議行動",
+            "risk_action_optimal": "建議行動（最佳）",
+            "risk_alert": "風險警示",
+        }
 
+    sheet_name = "Prediction Results" if lang == "en" else "預測結果"
     buffer = io.BytesIO()
     with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
-        result_df.to_excel(writer, sheet_name="預測結果", index=False)
-        ws = writer.sheets["預測結果"]
+        result_df.to_excel(writer, sheet_name=sheet_name, index=False)
+        ws = writer.sheets[sheet_name]
 
         # ── 樣式定義 ──
         header_font = Font(bold=True, color="FFFFFF", size=11)
@@ -490,10 +623,11 @@ def download_csv(request):
     """下載 CSV 格式預測報表。"""
     prediction = request.session.get("last_prediction")
     if not prediction:
-        return HttpResponse("尚無預測結果可下載。", status=400)
+        return HttpResponse("No prediction result available.", status=400)
 
     result = prediction["result"]
     timestamp = prediction["timestamp"]
+    lang = request.session.get("lang", "zh")
 
     response = HttpResponse(content_type="text/csv; charset=utf-8-sig")
     response["Content-Disposition"] = (
@@ -501,22 +635,34 @@ def download_csv(request):
     )
 
     writer = csv.writer(response)
-    writer.writerow(["違約預測報表"])
-    writer.writerow(["產出時間", timestamp])
-    writer.writerow([])
 
-    # 預測結果
-    writer.writerow(["== 預測結果 =="])
-    writer.writerow(["違約機率", f'{result["default_probability"]}%'])
-    writer.writerow(["風險分數", result["risk_score"]])
-    writer.writerow(["風險等級", result["risk_grade"]])
-    writer.writerow(["風險標籤", result["risk_label"]])
-    writer.writerow(["風險警示", result["risk_alert"]])
-    writer.writerow(["建議行動", result["recommendation"]])
-    writer.writerow([])
+    if lang == "en":
+        writer.writerow(["Default Prediction Report"])
+        writer.writerow(["Generated at", timestamp])
+        writer.writerow([])
+        writer.writerow(["== Prediction Results =="])
+        writer.writerow(["Default Probability", f'{result["default_probability"]}%'])
+        writer.writerow(["Risk Score", result["risk_score"]])
+        writer.writerow(["Risk Grade", result["risk_grade"]])
+        writer.writerow(["Risk Label", result["risk_label"]])
+        writer.writerow(["Risk Alert", result["risk_alert"]])
+        writer.writerow(["Recommendation", result["recommendation"]])
+        writer.writerow([])
+        writer.writerow(["== Input Data Summary =="])
+    else:
+        writer.writerow(["違約預測報表"])
+        writer.writerow(["產出時間", timestamp])
+        writer.writerow([])
+        writer.writerow(["== 預測結果 =="])
+        writer.writerow(["違約機率", f'{result["default_probability"]}%'])
+        writer.writerow(["風險分數", result["risk_score"]])
+        writer.writerow(["風險等級", result["risk_grade"]])
+        writer.writerow(["風險標籤", result["risk_label"]])
+        writer.writerow(["風險警示", result["risk_alert"]])
+        writer.writerow(["建議行動", result["recommendation"]])
+        writer.writerow([])
+        writer.writerow(["== 輸入資料摘要 =="])
 
-    # 輸入摘要
-    writer.writerow(["== 輸入資料摘要 =="])
     for key, value in result["input_summary"].items():
         writer.writerow([key, value])
 
@@ -527,53 +673,69 @@ def download_excel(request):
     """下載 Excel 格式預測報表。"""
     prediction = request.session.get("last_prediction")
     if not prediction:
-        return HttpResponse("尚無預測結果可下載。", status=400)
+        return HttpResponse("No prediction result available.", status=400)
 
     result = prediction["result"]
     timestamp = prediction["timestamp"]
+    lang = request.session.get("lang", "zh")
 
     try:
         import openpyxl
         from openpyxl.styles import Alignment, Font, PatternFill
     except ImportError:
-        return HttpResponse("伺服器缺少 openpyxl 套件，請先安裝。", status=500)
+        return HttpResponse("Missing openpyxl package.", status=500)
 
     wb = openpyxl.Workbook()
     ws = wb.active
-    ws.title = "違約預測報表"
 
     # 標題
     header_font = Font(bold=True, size=14, color="FFFFFF")
     header_fill = PatternFill(start_color="E65100", end_color="E65100", fill_type="solid")
     ws.merge_cells("A1:B1")
-    ws["A1"] = "違約預測報表"
     ws["A1"].font = header_font
     ws["A1"].fill = header_fill
     ws["A1"].alignment = Alignment(horizontal="center")
 
-    ws["A2"] = "產出時間"
-    ws["B2"] = timestamp
-
-    # 預測結果
     section_font = Font(bold=True, size=11)
-    ws["A4"] = "預測結果"
-    ws["A4"].font = section_font
 
-    rows = [
-        ("違約機率", f'{result["default_probability"]}%'),
-        ("風險分數", result["risk_score"]),
-        ("風險等級", result["risk_grade"]),
-        ("風險標籤", result["risk_label"]),
-        ("風險警示", result["risk_alert"]),
-        ("建議行動", result["recommendation"]),
-    ]
+    if lang == "en":
+        ws.title = "Prediction Report"
+        ws["A1"] = "Default Prediction Report"
+        ws["A2"] = "Generated at"
+        ws["B2"] = timestamp
+        ws["A4"] = "Prediction Results"
+        ws["A4"].font = section_font
+        rows = [
+            ("Default Probability", f'{result["default_probability"]}%'),
+            ("Risk Score", result["risk_score"]),
+            ("Risk Grade", result["risk_grade"]),
+            ("Risk Label", result["risk_label"]),
+            ("Risk Alert", result["risk_alert"]),
+            ("Recommendation", result["recommendation"]),
+        ]
+    else:
+        ws.title = "違約預測報表"
+        ws["A1"] = "違約預測報表"
+        ws["A2"] = "產出時間"
+        ws["B2"] = timestamp
+        ws["A4"] = "預測結果"
+        ws["A4"].font = section_font
+        rows = [
+            ("違約機率", f'{result["default_probability"]}%'),
+            ("風險分數", result["risk_score"]),
+            ("風險等級", result["risk_grade"]),
+            ("風險標籤", result["risk_label"]),
+            ("風險警示", result["risk_alert"]),
+            ("建議行動", result["recommendation"]),
+        ]
+
     for i, (k, v) in enumerate(rows, start=5):
         ws[f"A{i}"] = k
         ws[f"B{i}"] = v
 
     # 輸入摘要
     row_offset = 5 + len(rows) + 1
-    ws[f"A{row_offset}"] = "輸入資料摘要"
+    ws[f"A{row_offset}"] = "Input Data Summary" if lang == "en" else "輸入資料摘要"
     ws[f"A{row_offset}"].font = section_font
     for i, (k, v) in enumerate(result["input_summary"].items(), start=row_offset + 1):
         ws[f"A{i}"] = k
