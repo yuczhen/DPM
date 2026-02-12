@@ -81,6 +81,9 @@ STORAGES = {
     },
 }
 
+# ── HF Spaces iframe 嵌入 ──
+X_FRAME_OPTIONS = "ALLOWALL"
+
 # ── 密碼保護 ──
 DPM_ACCESS_PASSWORD = os.environ.get("DPM_ACCESS_PASSWORD", "dpm2026")
 
