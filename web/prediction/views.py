@@ -416,8 +416,11 @@ def upload_predict(request):
             "session_lang": lang,
         })
 
+    # 從 POST 取得當前語言（前端 toggle 可能與登入時不同），並更新 session
+    lang = request.POST.get("lang", request.session.get("lang", "zh"))
+    request.session["lang"] = lang
+
     # Translate English categorical values → Chinese for model processing
-    lang = request.session.get("lang", "zh")
     for col in EN_CATEGORICAL_COLS:
         if col in df.columns:
             df[col] = df[col].map(lambda v: EN_TO_ZH.get(str(v).strip(), v) if pd.notna(v) else v)
@@ -460,7 +463,6 @@ def upload_predict(request):
     result_df = result_df.drop(columns=[c for c in drop_cols if c in result_df.columns])
 
     # Translate model output values to English if session lang is "en"
-    lang = request.session.get("lang", "zh")
     if lang == "en":
         if "risk_grade" in result_df.columns:
             result_df["risk_grade"] = result_df["risk_grade"].map(

@@ -403,6 +403,7 @@
       </div>
       <form method="post" enctype="multipart/form-data" action="{% url 'prediction:upload_predict' %}" id="uploadForm">
         {% csrf_token %}
+        <input type="hidden" name="lang" id="uploadLang" value="{{ session_lang|default:'zh' }}">
         <div class="p-6 space-y-4">
           <p class="text-gray-600 text-sm" data-i18n="modal.desc">上傳包含多位客戶資料的 Excel / CSV 檔案，系統將批次執行預測並產出結果。</p>
 
@@ -842,7 +843,9 @@
     }
 
     document.getElementById("langToggle").addEventListener("click", () => {
-      applyLang(currentLang === "zh" ? "en" : "zh");
+      const newLang = currentLang === "zh" ? "en" : "zh";
+      applyLang(newLang);
+      document.getElementById("uploadLang").value = newLang;
     });
 
     // Apply language on page load and sync localStorage
