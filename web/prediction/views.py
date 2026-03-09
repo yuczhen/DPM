@@ -129,15 +129,21 @@ ZH_TO_EN = {v: k for k, v in EN_TO_ZH.items()}
 def predict_model(cleaned_data: dict, lang: str = "zh") -> dict:
     """
     接收表單清洗後的資料，呼叫真實 DPMPredictor 回傳預測結果。
-    lang: "zh" or "en" — controls output language and currency.
+    lang: "zh" or "en" — controls primary display language and currency.
+    Always returns both _zh and _en variants for client-side toggle support.
     """
     predictor = _get_predictor()
 
-    # Convert USD → NTD for English users (model expects NTD)
     original_salary = cleaned_data.get("month_salary", 0)
-    if lang == "en" and "month_salary" in cleaned_data:
+    # Determine salary in both currencies
+    if lang == "en":
         cleaned_data = dict(cleaned_data)  # avoid mutating original
         cleaned_data["month_salary"] = original_salary / NTD_TO_USD
+        salary_usd = original_salary
+        salary_ntd = original_salary / NTD_TO_USD
+    else:
+        salary_ntd = original_salary
+        salary_usd = original_salary * NTD_TO_USD
 
     df = _form_to_dataframe(cleaned_data)
 
@@ -147,70 +153,57 @@ def predict_model(cleaned_data: dict, lang: str = "zh") -> dict:
 
     prob = float(row["default_probability"])       # 已是百分比 0-100
     risk_score = int(row["risk_score"])             # 0-100
-    risk_grade = str(row["risk_grade"])             # e.g. "A (優良)"
-    risk_alert = str(row["risk_alert"])             # e.g. "LOW RISK"
-    recommendation = str(row.get("risk_action_optimal", row.get("risk_action", "")))
+    risk_grade_raw = str(row["risk_grade"])         # always zh from model, e.g. "A (優良)"
+    risk_alert = str(row["risk_alert"])             # always EN from model, e.g. "LOW RISK"
+    recommendation_raw = str(row.get("risk_action_optimal", row.get("risk_action", "")))  # always zh
 
-    # 風險等級 → 短標籤 + 顏色
-    grade_letter = risk_grade[0] if risk_grade else "C"
+    grade_letter = risk_grade_raw[0] if risk_grade_raw else "C"
     color_map = {"A": "emerald", "B": "green", "C": "amber", "D": "orange", "E": "red"}
     risk_color = color_map.get(grade_letter, "gray")
 
-    if lang == "en":
-        label_map = {"A": "Very Low Risk", "B": "Moderate Risk", "C": "High Risk", "D": "Very High Risk", "E": "Critical Risk"}
-        risk_label = label_map.get(grade_letter, "Unknown")
-        risk_grade = ZH_TO_EN_GRADE.get(risk_grade, risk_grade)
-        recommendation = ZH_TO_EN_ACTION.get(recommendation, recommendation)
+    # Both language variants
+    risk_grade_zh = risk_grade_raw
+    risk_grade_en = ZH_TO_EN_GRADE.get(risk_grade_raw, risk_grade_raw)
+    risk_label_zh = {"A": "極低風險", "B": "中等風險", "C": "高風險", "D": "極高風險", "E": "危急風險"}.get(grade_letter, "未知")
+    risk_label_en = {"A": "Very Low Risk", "B": "Moderate Risk", "C": "High Risk", "D": "Very High Risk", "E": "Critical Risk"}.get(grade_letter, "Unknown")
+    recommendation_zh = recommendation_raw
+    recommendation_en = ZH_TO_EN_ACTION.get(recommendation_raw, recommendation_raw)
 
-        _t = lambda v: ZH_TO_EN.get(str(v), v)  # translate ZH→EN
-        input_summary = {
-            "Education": _t(cleaned_data.get("education", "")),
-            "Monthly Salary": f'${original_salary:,.0f} USD',
-            "Job Tenure": f'{cleaned_data.get("job_tenure", 0)} years',
-            "Residence Status": _t(cleaned_data.get("residence_status", "")),
-            "Industry": _t(cleaned_data.get("main_business", "")),
-            "Loan Purpose": _t(cleaned_data.get("product", "")),
-            "Loan Term": f'{cleaned_data.get("loan_term", 0)} months',
-            "Paid Installments": f'{cleaned_data.get("paid_installments", 0)} months',
-            "Debt-to-Income Ratio": f'{cleaned_data.get("debt_to_income_ratio", 0)}',
-            "Payment-to-Income Ratio": f'{cleaned_data.get("payment_to_income_ratio", 0)}',
-            "Permanent Address Postal Code": str(cleaned_data.get("post_code_permanent", "")),
-            "Residential Address Postal Code": str(cleaned_data.get("post_code_residential", "")),
-            "Total Overdue Count": str(sum(
-                cleaned_data.get(f, 0) for f in [
-                    "overdue_before_first", "overdue_first_half",
-                    "overdue_first_second_half", "overdue_month_2",
-                    "overdue_month_3", "overdue_month_4",
-                    "overdue_month_5", "overdue_month_6",
-                ]
-            )),
-        }
-    else:
-        label_map = {"A": "極低風險", "B": "中等風險", "C": "高風險", "D": "極高風險", "E": "危急風險"}
-        risk_label = label_map.get(grade_letter, "未知")
+    _t = lambda v: ZH_TO_EN.get(str(v), v)  # translate ZH categorical → EN
 
-        input_summary = {
-            "教育程度": cleaned_data.get("education", ""),
-            "月薪": f'{cleaned_data.get("month_salary", 0):,.0f} 元',
-            "工作年資": f'{cleaned_data.get("job_tenure", 0)} 年',
-            "居住狀態": cleaned_data.get("residence_status", ""),
-            "行業別": cleaned_data.get("main_business", ""),
-            "借款目的": cleaned_data.get("product", ""),
-            "貸款期數": f'{cleaned_data.get("loan_term", 0)} 期',
-            "已繳期數": f'{cleaned_data.get("paid_installments", 0)} 期',
-            "負債收入比": f'{cleaned_data.get("debt_to_income_ratio", 0)}',
-            "還款收入比": f'{cleaned_data.get("payment_to_income_ratio", 0)}',
-            "戶籍郵遞區號": str(cleaned_data.get("post_code_permanent", "")),
-            "居住郵遞區號": str(cleaned_data.get("post_code_residential", "")),
-            "逾期總次數": str(sum(
-                cleaned_data.get(f, 0) for f in [
-                    "overdue_before_first", "overdue_first_half",
-                    "overdue_first_second_half", "overdue_month_2",
-                    "overdue_month_3", "overdue_month_4",
-                    "overdue_month_5", "overdue_month_6",
-                ]
-            )),
-        }
+    overdue_total = str(sum(
+        cleaned_data.get(f, 0) for f in [
+            "overdue_before_first", "overdue_first_half",
+            "overdue_first_second_half", "overdue_month_2",
+            "overdue_month_3", "overdue_month_4",
+            "overdue_month_5", "overdue_month_6",
+        ]
+    ))
+
+    # Bilingual rows for client-side toggle: [{key_zh, key_en, val_zh, val_en}, ...]
+    input_summary_rows = [
+        {"key_zh": "教育程度",    "key_en": "Education",              "val_zh": cleaned_data.get("education", ""),          "val_en": _t(cleaned_data.get("education", ""))},
+        {"key_zh": "月薪",        "key_en": "Monthly Salary",         "val_zh": f'{salary_ntd:,.0f} 元',                    "val_en": f'${salary_usd:,.0f} USD'},
+        {"key_zh": "工作年資",    "key_en": "Job Tenure",             "val_zh": f'{cleaned_data.get("job_tenure", 0)} 年',   "val_en": f'{cleaned_data.get("job_tenure", 0)} years'},
+        {"key_zh": "居住狀態",    "key_en": "Residence Status",       "val_zh": cleaned_data.get("residence_status", ""),   "val_en": _t(cleaned_data.get("residence_status", ""))},
+        {"key_zh": "行業別",      "key_en": "Industry",               "val_zh": cleaned_data.get("main_business", ""),      "val_en": _t(cleaned_data.get("main_business", ""))},
+        {"key_zh": "借款目的",    "key_en": "Loan Purpose",           "val_zh": cleaned_data.get("product", ""),            "val_en": _t(cleaned_data.get("product", ""))},
+        {"key_zh": "貸款期數",    "key_en": "Loan Term",              "val_zh": f'{cleaned_data.get("loan_term", 0)} 期',    "val_en": f'{cleaned_data.get("loan_term", 0)} months'},
+        {"key_zh": "已繳期數",    "key_en": "Paid Installments",      "val_zh": f'{cleaned_data.get("paid_installments", 0)} 期', "val_en": f'{cleaned_data.get("paid_installments", 0)} months'},
+        {"key_zh": "負債收入比",  "key_en": "Debt-to-Income Ratio",   "val_zh": f'{cleaned_data.get("debt_to_income_ratio", 0)}',   "val_en": f'{cleaned_data.get("debt_to_income_ratio", 0)}'},
+        {"key_zh": "還款收入比",  "key_en": "Payment-to-Income Ratio","val_zh": f'{cleaned_data.get("payment_to_income_ratio", 0)}', "val_en": f'{cleaned_data.get("payment_to_income_ratio", 0)}'},
+        {"key_zh": "戶籍郵遞區號","key_en": "Perm. Postal Code",      "val_zh": str(cleaned_data.get("post_code_permanent", "")),   "val_en": str(cleaned_data.get("post_code_permanent", ""))},
+        {"key_zh": "居住郵遞區號","key_en": "Res. Postal Code",       "val_zh": str(cleaned_data.get("post_code_residential", "")), "val_en": str(cleaned_data.get("post_code_residential", ""))},
+        {"key_zh": "逾期總次數",  "key_en": "Total Overdue Count",    "val_zh": overdue_total,                              "val_en": overdue_total},
+    ]
+
+    # Primary display based on lang
+    risk_grade = risk_grade_en if lang == "en" else risk_grade_zh
+    risk_label = risk_label_en if lang == "en" else risk_label_zh
+    recommendation = recommendation_en if lang == "en" else recommendation_zh
+    key_lang = "key_en" if lang == "en" else "key_zh"
+    val_lang = "val_en" if lang == "en" else "val_zh"
+    input_summary = {r[key_lang]: r[val_lang] for r in input_summary_rows}
 
     return {
         "default_probability": round(prob, 2),
@@ -220,7 +213,15 @@ def predict_model(cleaned_data: dict, lang: str = "zh") -> dict:
         "risk_color": risk_color,
         "risk_alert": risk_alert,
         "recommendation": recommendation,
-        "input_summary": input_summary,
+        "input_summary": input_summary,        # for CSV/Excel download (lang-specific)
+        # Both language variants for client-side toggle
+        "risk_grade_zh": risk_grade_zh,
+        "risk_grade_en": risk_grade_en,
+        "risk_label_zh": risk_label_zh,
+        "risk_label_en": risk_label_en,
+        "recommendation_zh": recommendation_zh,
+        "recommendation_en": recommendation_en,
+        "input_summary_rows": input_summary_rows,
     }
 
 

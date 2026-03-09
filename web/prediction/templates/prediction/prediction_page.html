@@ -253,8 +253,8 @@
                   {{ result.risk_grade|first }}
                 </div>
                 <div class="text-left">
-                  <p class="text-gray-700 text-sm font-medium">{{ result.risk_grade }}</p>
-                  <span class="inline-block mt-1 px-3 py-0.5 rounded-full text-xs font-semibold
+                  <p class="text-gray-700 text-sm font-medium" id="resultRiskGrade" data-zh="{{ result.risk_grade_zh }}" data-en="{{ result.risk_grade_en }}">{{ result.risk_grade }}</p>
+                  <span id="resultRiskLabel" data-zh="{{ result.risk_label_zh }}" data-en="{{ result.risk_label_en }}" class="inline-block mt-1 px-3 py-0.5 rounded-full text-xs font-semibold
                     {% if result.risk_color == 'emerald' %}bg-emerald-100 text-emerald-700
                     {% elif result.risk_color == 'green' %}bg-green-100 text-green-700
                     {% elif result.risk_color == 'amber' %}bg-amber-100 text-amber-700
@@ -274,7 +274,7 @@
             <!-- 建議行動 + 下載 -->
             <div class="bg-white rounded-2xl shadow-xl border border-sunset-100 p-5 flex flex-col">
               <h3 class="text-sunset-800 font-semibold text-sm mb-2" data-i18n="result.action">建議行動</h3>
-              <p class="text-gray-700 text-sm leading-relaxed flex-1">{{ result.recommendation }}</p>
+              <p class="text-gray-700 text-sm leading-relaxed flex-1" id="resultRecommendation" data-zh="{{ result.recommendation_zh }}" data-en="{{ result.recommendation_en }}">{{ result.recommendation }}</p>
               <div class="mt-3 pt-3 border-t border-gray-100 flex flex-wrap gap-2">
                 <a href="{% url 'prediction:download_csv' %}" class="flex items-center gap-1.5 px-3 py-1.5 bg-sunset-50 hover:bg-sunset-100 text-sunset-700 rounded-lg text-xs font-medium transition-colors">
                   <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M4 16v2a2 2 0 002 2h12a2 2 0 002-2v-2M7 10l5 5 5-5M12 15V3"/></svg>
@@ -379,10 +379,10 @@
               </tr>
             </thead>
             <tbody class="divide-y divide-gray-100">
-              {% for key, value in result.input_summary.items %}
+              {% for row in result.input_summary_rows %}
               <tr class="hover:bg-sunset-50/50 transition-colors">
-                <td class="px-6 py-3 text-sm font-medium text-gray-700">{{ key }}</td>
-                <td class="px-6 py-3 text-sm text-gray-600">{{ value }}</td>
+                <td class="px-6 py-3 text-sm font-medium text-gray-700 result-summary-key" data-zh="{{ row.key_zh }}" data-en="{{ row.key_en }}">{% if session_lang == "en" %}{{ row.key_en }}{% else %}{{ row.key_zh }}{% endif %}</td>
+                <td class="px-6 py-3 text-sm text-gray-600 result-summary-val" data-zh="{{ row.val_zh }}" data-en="{{ row.val_en }}">{% if session_lang == "en" %}{{ row.val_en }}{% else %}{{ row.val_zh }}{% endif %}</td>
               </tr>
               {% endfor %}
             </tbody>
@@ -802,6 +802,16 @@
         } else if (input.id === "id_payment_to_income_ratio") {
           helpEl.textContent = lang === "en" ? "0.15 = 15%" : helpEl.dataset.zh;
         }
+      });
+
+      // Translate server-rendered result fields (risk grade, label, recommendation)
+      ["resultRiskGrade", "resultRiskLabel", "resultRecommendation"].forEach(id => {
+        const el = document.getElementById(id);
+        if (el && el.dataset[lang]) el.textContent = el.dataset[lang];
+      });
+      // Translate input summary table
+      document.querySelectorAll(".result-summary-key, .result-summary-val").forEach(td => {
+        if (td.dataset[lang]) td.textContent = td.dataset[lang];
       });
 
       // Translate batch grade items
