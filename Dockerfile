@@ -35,4 +35,4 @@ RUN python manage.py migrate --run-syncdb && \
 # HF Spaces 規定 Port 7860
 EXPOSE 7860
 
-CMD ["gunicorn", "core.wsgi:application", "--bind", "0.0.0.0:7860", "--workers", "2", "--timeout", "120"]
+CMD ["gunicorn", "core.wsgi:application", "--bind", "0.0.0.0:7860", "--workers", "1", "--timeout", "120"]
