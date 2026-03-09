@@ -269,6 +269,8 @@ def prediction_page(request):
     lang = request.session.get("lang", "zh")
 
     if request.method == "POST":
+        lang = request.POST.get("lang", lang)
+        request.session["lang"] = lang
         form = PredictionForm(request.POST)
         if form.is_valid():
             try:
